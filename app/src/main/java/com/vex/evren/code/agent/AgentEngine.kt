@@ -101,7 +101,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 val output = execute(name, args, targets, changes, logs)
                 if (name == "submit_plan") plan = args.optJSONArray("steps").asStringList()
                 messages.put(JSONObject().put("role", "tool")
-                    .put("tool_call_id", call.optString("id)).put("content", output))
+                    .put("tool_call_id", call.optString("id")).put("content", output))
             }
         }
         return AgentRunResult(
