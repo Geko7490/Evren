@@ -108,6 +108,8 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
     val repositories = remember { mutableStateListOf<GitHubRepository>() }
     var selectedRepository by remember { mutableStateOf<GitHubRepository?>(null) }
     var selectedSecondaryRepository by remember { mutableStateOf<GitHubRepository?>(null) }
+    var secondaryWorkingBranch by remember { mutableStateOf("") }
+    var secondaryBranchRepository by remember { mutableStateOf("") }
     var agentMaxPower by remember { mutableStateOf(false) }
     var agentAutopilot by remember { mutableStateOf(false) }
     var selectedBranch by remember { mutableStateOf("") }
@@ -318,7 +320,13 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                 repository = selectedRepository,
                 availableRepositories = repositories,
                 secondaryRepository = selectedSecondaryRepository,
-                onSecondaryRepository = { selectedSecondaryRepository = it },
+                onSecondaryRepository = { repo ->
+                    selectedSecondaryRepository = repo
+                    if (repo?.fullName != secondaryBranchRepository) {
+                        secondaryWorkingBranch = ""
+                        secondaryBranchRepository = repo?.fullName.orEmpty()
+                    }
+                },
                 branch = workingBranch,
                 model = selectedModel,
                 modelDetails = modelDetails,
@@ -355,9 +363,12 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                             }
                             val targets = mutableListOf(AgentTarget(repo, workingBranch))
                             selectedSecondaryRepository?.let { secondRepo ->
-                                val secondBranch = "vex-agent-${System.currentTimeMillis()}-secondary"
-                                github.createBranch(secondRepo.fullName, secondBranch, secondRepo.defaultBranch)
-                                targets += AgentTarget(secondRepo, secondBranch)
+                                if (secondaryWorkingBranch.isBlank() || secondaryBranchRepository != secondRepo.fullName) {
+                                    secondaryWorkingBranch = "vex-agent-${System.currentTimeMillis()}-secondary"
+                                    secondaryBranchRepository = secondRepo.fullName
+                                    github.createBranch(secondRepo.fullName, secondaryWorkingBranch, secondRepo.defaultBranch)
+                                }
+                                targets += AgentTarget(secondRepo, secondaryWorkingBranch)
                             }
                             val fullRequest = buildString {
                                 append(taskInput)
@@ -402,7 +413,7 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                             )
                             proposals.remove(change)
                             if (activeChange == change) activeChange = null
-                            connectionMessage = "Applied ${change.path} to $workingBranch"
+                            connectionMessage = "Applied ${change.path} to ${change.branch}"
                         } catch (e: Exception) { errorMessage = e.message }
                         finally { busy = false }
                     }
@@ -741,7 +752,7 @@ private fun ChangesPanel(
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(proposals, key = { "${it.repositoryFullName}:${it.path}" }) { change ->
                     OutlinedButton(onClick = { onSelect(change) }, modifier = Modifier.fillMaxWidth()) {
-                        Text(change.path, color = if (active?.path == change.path) VexPurple else VexText)
+                        Text("${change.repositoryFullName} · ${change.path}", color = if (active?.repositoryFullName == change.repositoryFullName && active.path == change.path) VexPurple else VexText)
                     }
                 }
             }
