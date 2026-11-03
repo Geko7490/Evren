@@ -154,7 +154,6 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                                 text = { Text(model.displayName) },
                                 onClick = {
                                     selectedModel = model.id
-                                    evren.setActiveModel(model.id)
                                     modelMenu = false
                                 }
                             )
@@ -435,7 +434,9 @@ private fun FileBrowserPanel(
         } else {
             OutlinedTextField(filter, onFilter, Modifier.fillMaxWidth(), label = { Text("Filter path / directory prefix") }, singleLine = true)
             val visible = entries.filter { entry ->
-                if (filter.isBlank()) !entry.path.contains("/") else entry.path.startsWith(filter.trim('/'))
+                val prefix = filter.trim('/')
+                if (prefix.isBlank()) !entry.path.contains("/")
+                else entry.path.startsWith("$prefix/") && !entry.path.removePrefix("$prefix/").contains("/")
             }.take(500)
             LazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 items(visible, key = { it.path }) { entry ->
