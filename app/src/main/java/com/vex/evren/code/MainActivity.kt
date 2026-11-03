@@ -47,6 +47,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vex.evren.code.agent.AgentEngine
+import com.vex.evren.code.agent.AgentTarget
 import com.vex.evren.code.agent.AgentRunResult
 import com.vex.evren.code.agent.ProposedChange
 import com.vex.evren.code.data.EvrenApiClient
@@ -106,6 +107,9 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
     var selectedModel by remember { mutableStateOf("") }
     val repositories = remember { mutableStateListOf<GitHubRepository>() }
     var selectedRepository by remember { mutableStateOf<GitHubRepository?>(null) }
+    var selectedSecondaryRepository by remember { mutableStateOf<GitHubRepository?>(null) }
+    var agentMaxPower by remember { mutableStateOf(false) }
+    var agentAutopilot by remember { mutableStateOf(false) }
     var selectedBranch by remember { mutableStateOf("") }
     var workingBranch by remember { mutableStateOf("") }
     val tree = remember { mutableStateListOf<GitHubTreeEntry>() }
@@ -312,21 +316,29 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
             )
             WorkspaceTab.AGENT -> AgentPanel(
                 repository = selectedRepository,
+                availableRepositories = repositories,
+                secondaryRepository = selectedSecondaryRepository,
+                onSecondaryRepository = { selectedSecondaryRepository = it },
                 branch = workingBranch,
                 model = selectedModel,
                 modelDetails = modelDetails,
                 termsAccepted = termsAccepted,
+                evren = evren,
+                maxPower = agentMaxPower,
+                onMaxPower = { agentMaxPower = it },
+                autopilot = agentAutopilot,
+                onAutopilot = { agentAutopilot = it },
                 input = taskInput,
                 onInput = { taskInput = it },
                 status = agentStatus,
                 result = agentResult,
                 busy = busy,
-                onRun = {
+                onRun = { planningContext ->
                     val repo = selectedRepository
-                    if (!termsAccepted) errorMessage = "Read and accept EVREN API terms before running the Agent."
-                    else if (repo == null) errorMessage = "Select a repository first."
-                    else if (selectedModel.isBlank()) errorMessage = "Connect EVREN and select a model."
-                    else if (workingBranch == repo.defaultBranch) errorMessage = "Create a dedicated working branch in Files before running code changes."
+                    if (!termsAccepted) errorMessage = "EVREN şartlarını kabul etmeden Agent çalıştırılamaz."
+                    else if (repo == null) errorMessage = "Önce bir repo seçin."
+                    else if (selectedModel.isBlank()) errorMessage = "EVREN'e bağlanıp model seçin."
+                    else if (workingBranch == repo.defaultBranch) errorMessage = "Önce Files sekmesinden ana repo için çalışma dalı oluşturun."
                     else scope.launch {
                         busy = true
                         agentResult = null
@@ -334,17 +346,37 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                         try {
                             val details = modelDetails ?: if (selectedModel == "auto") null else evren.getModelDetails(selectedModel)
                             if (details?.tools == false) {
-                                throw IllegalStateException("The selected EVREN model does not advertise Tool Calling support.")
+                                throw IllegalStateException("Seçilen EVREN modeli Tool Calling desteklemiyor.")
                             }
-                            val tokenBudget = details?.recommendedAgentBudget() ?: 4096
+                            val tokenBudget = if (agentMaxPower) {
+                                details?.defaultMaxOutputTokens?.coerceAtLeast(1) ?: 4096
+                            } else {
+                                details?.recommendedAgentBudget() ?: 4096
+                            }
+                            val targets = mutableListOf(AgentTarget(repo, workingBranch))
+                            selectedSecondaryRepository?.let { secondRepo ->
+                                val secondBranch = "vex-agent-${System.currentTimeMillis()}-secondary"
+                                github.createBranch(secondRepo.fullName, secondBranch, secondRepo.defaultBranch)
+                                targets += AgentTarget(secondRepo, secondBranch)
+                            }
+                            val fullRequest = buildString {
+                                append(taskInput)
+                                if (planningContext.isNotBlank()) {
+                                    appendLine()
+                                    appendLine()
+                                    appendLine("Planning conversation and agreed decisions:")
+                                    append(planningContext)
+                                }
+                            }
                             val result = AgentEngine(evren, github).run(
-                                selectedModel, taskInput, repo, workingBranch, tokenBudget
+                                selectedModel, fullRequest, targets, tokenBudget,
+                                if (agentAutopilot) 30 else 12
                             ) { agentStatus = it }
                             agentResult = result
                             proposals.addAll(result.changes)
-                            agentStatus = "Task finished · ${result.changes.size} proposed file change(s)."
+                            agentStatus = "Tamamlandı · ${result.changes.size} değişiklik önerisi"
                         } catch (e: Exception) {
-                            agentStatus = e.message ?: "Agent failed."
+                            agentStatus = e.message ?: "Agent başarısız."
                             errorMessage = agentStatus
                         } finally { busy = false }
                     }
@@ -359,13 +391,14 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                 onSelect = { activeChange = it },
                 onApply = { change ->
                     scope.launch {
-                        val repo = selectedRepository ?: return@launch
+                        val repo = repositories.firstOrNull { it.fullName == change.repositoryFullName }
+                            ?: return@launch
                         busy = true
                         try {
                             github.updateFile(
                                 repo.fullName, change.path, change.after,
                                 "agent: update ${change.path.substringAfterLast('/')}",
-                                workingBranch, change.originalSha
+                                change.branch, change.originalSha
                             )
                             proposals.remove(change)
                             if (activeChange == change) activeChange = null
@@ -547,28 +580,134 @@ private fun FileBrowserPanel(
 
 @Composable
 private fun AgentPanel(
-    repository: GitHubRepository?, branch: String, model: String,
+    repository: GitHubRepository?,
+    availableRepositories: List<GitHubRepository>,
+    secondaryRepository: GitHubRepository?,
+    onSecondaryRepository: (GitHubRepository?) -> Unit,
+    branch: String, model: String,
     modelDetails: EvrenModelDetails?, termsAccepted: Boolean,
+    evren: EvrenApiClient,
+    maxPower: Boolean, onMaxPower: (Boolean) -> Unit,
+    autopilot: Boolean, onAutopilot: (Boolean) -> Unit,
     input: String, onInput: (String) -> Unit, status: String,
-    result: AgentRunResult?, busy: Boolean, onRun: () -> Unit, onViewChanges: () -> Unit
+    result: AgentRunResult?, busy: Boolean, onRun: (String) -> Unit, onViewChanges: () -> Unit
 ) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val scope = rememberCoroutineScope()
+    val plannerMessages = remember { mutableStateListOf<Pair<String, String>>() }
+    var plannerInput by remember { mutableStateOf("") }
+    var plannerBusy by remember { mutableStateOf(false) }
+    var repoMenu by remember { mutableStateOf(false) }
+    var planningContext by remember { mutableStateOf("") }
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Autonomous coding agent", color = VexText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Text("${repository?.fullName ?: "No repository selected"} · $branch · ${model.ifBlank { "No model" }}", color = VexMuted, fontSize = 11.sp)
+        Text("${repository?.fullName ?: "No repository"} · $branch · ${model.ifBlank { "No model" }}", color = VexMuted, fontSize = 11.sp)
         if (model == "auto") {
-            Text("Auto routing: fixed model capabilities are not available. Agent token budget: 4096.", color = VexMuted, fontSize = 11.sp)
+            Text("Auto routing · Model output ceiling is provider-managed; 4096-token Agent request.", color = VexMuted, fontSize = 11.sp)
         } else if (modelDetails != null) {
             Text(
-                "Context: ${modelDetails.contextLength?.toString() ?: "unknown"} · Output cap: ${modelDetails.defaultMaxOutputTokens?.toString() ?: "unknown"} · Agent budget: ${modelDetails.recommendedAgentBudget()} · Tools: ${modelDetails.tools?.toString() ?: "unknown"} · Thinking: ${modelDetails.thinking?.toString() ?: "unknown"} · Vision: ${modelDetails.vision?.toString() ?: "unknown"} · Precision: ${modelDetails.precision ?: "unknown"}",
+                "Context: ${modelDetails.contextLength ?: "?"} · Model output cap: ${modelDetails.defaultMaxOutputTokens ?: "?"} · Standard budget: ${modelDetails.recommendedAgentBudget()}",
                 color = VexMuted, fontSize = 11.sp
             )
         } else {
             Text("Loading model capabilities…", color = VexMuted, fontSize = 11.sp)
         }
-        OutlinedTextField(input, onInput, Modifier.fillMaxWidth().height(140.dp),
+
+        Text("Connected repositories", color = VexText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        Text("1. ${repository?.fullName ?: "Not selected"}", color = VexMuted, fontSize = 11.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("2. ${secondaryRepository?.fullName ?: "Optional second repo"}", modifier = Modifier.weight(1f), color = VexMuted, fontSize = 11.sp)
+            TextButton(onClick = { repoMenu = true }) { Text(if (secondaryRepository == null) "Add repo" else "Change", color = VexPurple) }
+            DropdownMenu(expanded = repoMenu, onDismissRequest = { repoMenu = false }) {
+                DropdownMenuItem(text = { Text("No second repo") }, onClick = {
+                    onSecondaryRepository(null); repoMenu = false
+                })
+                availableRepositories.filter { it.fullName != repository?.fullName }.forEach { repo ->
+                    DropdownMenuItem(text = { Text(repo.fullName) }, onClick = {
+                        onSecondaryRepository(repo); repoMenu = false
+                    })
+                }
+            }
+        }
+
+        Surface(color = VexSurface, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Agent behavior", color = VexText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Max Power", color = VexText, fontSize = 12.sp)
+                        Text("Modelin izin verdiği en yüksek çıktı limitini kullanır.", color = VexMuted, fontSize = 10.sp)
+                    }
+                    androidx.compose.material3.Switch(checked = maxPower, onCheckedChange = onMaxPower)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Autopilot · Serbest mod", color = VexText, fontSize = 12.sp)
+                        Text("Yol haritasını ve adımları kendisi seçer; daha uzun süre ilerler.", color = VexMuted, fontSize = 10.sp)
+                    }
+                    androidx.compose.material3.Switch(checked = autopilot, onCheckedChange = onAutopilot)
+                }
+                Text(
+                    if (autopilot) "Autopilot: 30 Agent adımına kadar, görev sırasını kendi belirler."
+                    else "Standart: 12 Agent adımına kadar, kontrollü ilerler.",
+                    color = VexMuted, fontSize = 10.sp
+                )
+            }
+        }
+
+        OutlinedTextField(input, onInput, Modifier.fillMaxWidth().height(110.dp),
             label = { Text("Describe a coding task") },
-            placeholder = { Text("Analyze the project, find the bug, propose a fix…") })
-        Button(onClick = onRun, enabled = !busy && termsAccepted && repository != null && model.isNotBlank() && input.isNotBlank(),
+            placeholder = { Text("Analyze both repos, find the issue, coordinate the fix…") })
+
+        Surface(color = VexSurface, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Planlama sohbeti", color = VexText, fontWeight = FontWeight.SemiBold)
+                Text("Agent çalışmadan önce hedefi, mimariyi ve yol haritasını burada birlikte netleştirin.", color = VexMuted, fontSize = 10.sp)
+                plannerMessages.forEach { (role, message) ->
+                    Text(if (role == "user") "Sen: $message" else "EVREN: $message",
+                        color = if (role == "user") VexPurple else VexText, fontSize = 11.sp)
+                }
+                OutlinedTextField(plannerInput, { plannerInput = it }, Modifier.fillMaxWidth().height(76.dp),
+                    label = { Text("Plan hakkında konuş…") })
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            plannerMessages.clear()
+                            planningContext = ""
+                        },
+                        enabled = plannerMessages.isNotEmpty() && !plannerBusy
+                    ) { Text("Clear") }
+                    Button(
+                        onClick = {
+                            val prompt = plannerInput.trim()
+                            if (prompt.isNotBlank()) {
+                                plannerMessages.add("user" to prompt)
+                                plannerInput = ""
+                                plannerBusy = true
+                                scope.launch {
+                                    try {
+                                        val history = listOf(
+                                            "system" to "You are the planning partner for Vex EVREN Code. Help clarify requirements, propose a practical roadmap and risks. Do not claim code was changed. Keep replies concise."
+                                        ) + plannerMessages.toList()
+                                        val answer = evren.chat(model, history)
+                                        plannerMessages.add("assistant" to answer)
+                                        planningContext = plannerMessages.joinToString("\n") { (role, text) ->
+                                            "${if (role == "user") "User" else "EVREN"}: $text"
+                                        }
+                                    } catch (error: Exception) {
+                                        plannerMessages.add("assistant" to "Planlama hatası: ${error.message}")
+                                    } finally { plannerBusy = false }
+                                }
+                            }
+                        },
+                        enabled = !plannerBusy && !busy && termsAccepted && model.isNotBlank() && plannerInput.isNotBlank()
+                    ) { Text(if (plannerBusy) "Thinking…" else "Send") }
+                }
+            }
+        }
+
+        Button(onClick = { onRun(planningContext) },
+            enabled = !busy && termsAccepted && repository != null && model.isNotBlank() && input.isNotBlank(),
             modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) { Text("Run Agent") }
         Text(status, color = VexPurple, fontSize = 12.sp)
         result?.let { output ->
@@ -600,20 +739,20 @@ private fun ChangesPanel(
             Text("No pending proposals. Run an Agent task to prepare code changes.", color = VexMuted, fontSize = 13.sp)
         } else {
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(proposals, key = { it.path }) { change ->
+                items(proposals, key = { "${it.repositoryFullName}:${it.path}" }) { change ->
                     OutlinedButton(onClick = { onSelect(change) }, modifier = Modifier.fillMaxWidth()) {
                         Text(change.path, color = if (active?.path == change.path) VexPurple else VexText)
                     }
                 }
             }
             active?.let { change ->
-                Text("Diff · ${change.path}", color = VexText, fontWeight = FontWeight.SemiBold)
+                Text("Diff · ${change.repositoryFullName} · ${change.path}", color = VexText, fontWeight = FontWeight.SemiBold)
                 Column(Modifier.weight(1f).fillMaxWidth().background(VexSurface, RoundedCornerShape(8.dp))
                     .verticalScroll(rememberScrollState()).padding(10.dp)) {
                     Text(unifiedDiff(change.before, change.after), color = Color(0xFFD4D4D8), fontSize = 10.sp, lineHeight = 14.sp)
                 }
                 Button(onClick = { onApply(change) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                    Text("Approve & commit to $branch")
+                    Text("Approve & commit to ${change.branch}")
                 }
                 Text("This writes only to the working branch, not the default branch.", color = VexMuted, fontSize = 10.sp)
             }
