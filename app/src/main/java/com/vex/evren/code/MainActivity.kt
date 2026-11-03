@@ -51,6 +51,7 @@ import com.vex.evren.code.agent.AgentRunResult
 import com.vex.evren.code.agent.ProposedChange
 import com.vex.evren.code.data.EvrenApiClient
 import com.vex.evren.code.data.EvrenModel
+import com.vex.evren.code.data.EvrenModelDetails
 import com.vex.evren.code.data.GitHubApiClient
 import com.vex.evren.code.data.GitHubFile
 import com.vex.evren.code.data.GitHubRepository
@@ -118,6 +119,23 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
     var activeChange by remember { mutableStateOf<ProposedChange?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var modelMenu by remember { mutableStateOf(false) }
+    var modelDetails by remember { mutableStateOf<EvrenModelDetails?>(null) }
+    var termsDialogVisible by remember { mutableStateOf(false) }
+    var termsVersion by remember { mutableStateOf(-1) }
+    var termsContent by remember { mutableStateOf("") }
+    var termsAccepted by remember { mutableStateOf(false) }
+    var termsStatusMessage by remember { mutableStateOf("Terms status has not been checked.") }
+
+    suspend fun finishServiceConnection() {
+        val user = github.validateToken()
+        githubLogin = user.login
+        githubConnected = true
+        connectionMessage = "Connected as ${githubLogin} · ${models.size} EVREN models found."
+        val repos = github.listAccessibleRepositories()
+        repositories.clear()
+        repositories.addAll(repos)
+        tab = WorkspaceTab.REPOS
+    }
 
     LaunchedEffect(Unit) {
         evrenKey = vault.read("evren_api_key").orEmpty()
@@ -154,6 +172,7 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                                 text = { Text(model.displayName) },
                                 onClick = {
                                     selectedModel = model.id
+                                    modelDetails = null
                                     modelMenu = false
                                 }
                             )
@@ -178,7 +197,7 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
         when (tab) {
             WorkspaceTab.CONNECT -> ConnectionPanel(
                 evrenKey, { evrenKey = it }, githubToken, { githubToken = it },
-                apiUrl, { apiUrl = it }, connectionMessage, busy,
+                apiUrl, { apiUrl = it }, connectionMessage, termsStatusMessage, termsAccepted, busy,
                 onSaveAndValidate = {
                     scope.launch {
                         busy = true
@@ -194,14 +213,23 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                                 selectedModel = discovered.first().id
                             }
                             evrenConnected = true
-                            val user = github.validateToken()
-                            githubLogin = user.login
-                            githubConnected = true
-                            connectionMessage = "Connected as $githubLogin · ${models.size} EVREN models found."
-                            val repos = github.listAccessibleRepositories()
-                            repositories.clear()
-                            repositories.addAll(repos)
-                            tab = WorkspaceTab.REPOS
+                            val termsStatus = evren.getTermsStatus()
+                            termsAccepted = termsStatus.optBoolean("accepted", false)
+                            val currentVersion = termsStatus.optInt("current_version", -1)
+                            termsStatusMessage = if (termsAccepted) {
+                                "EVREN terms accepted (version ${termsStatus.optInt("accepted_version", currentVersion)})."
+                            } else {
+                                "Action required: read and accept EVREN terms before using the API."
+                            }
+                            if (termsAccepted) {
+                                finishServiceConnection()
+                            } else {
+                                val (documentVersion, content) = evren.getTermsText()
+                                termsVersion = if (currentVersion >= 0) currentVersion else documentVersion
+                                termsContent = content
+                                termsDialogVisible = true
+                                connectionMessage = "Review the EVREN LLM API terms and explicitly accept them."
+                            }
                         } catch (e: Exception) {
                             connectionMessage = e.message ?: "Connection validation failed."
                             errorMessage = connectionMessage
@@ -282,6 +310,7 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                 repository = selectedRepository,
                 branch = workingBranch,
                 model = selectedModel,
+                modelDetails = modelDetails,
                 input = taskInput,
                 onInput = { taskInput = it },
                 status = agentStatus,
@@ -297,8 +326,13 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                         agentResult = null
                         proposals.clear()
                         try {
+                            val details = modelDetails ?: if (selectedModel == "auto") null else evren.getModelDetails(selectedModel)
+                            if (details?.tools == false) {
+                                throw IllegalStateException("The selected EVREN model does not advertise Tool Calling support.")
+                            }
+                            val tokenBudget = details?.recommendedAgentBudget() ?: 4096
                             val result = AgentEngine(evren, github).run(
-                                selectedModel, taskInput, repo, workingBranch
+                                selectedModel, taskInput, repo, workingBranch, tokenBudget
                             ) { agentStatus = it }
                             agentResult = result
                             proposals.addAll(result.changes)
@@ -345,6 +379,54 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                 Text("Working…", color = VexMuted, fontSize = 12.sp)
             }
         }
+        LaunchedEffect(selectedModel, evrenConnected) {
+            modelDetails = null
+            if (evrenConnected && selectedModel.isNotBlank() && selectedModel != "auto") {
+                runCatching { evren.getModelDetails(selectedModel) }
+                    .onSuccess { modelDetails = it }
+                    .onFailure { errorMessage = "Model details unavailable: ${it.message}" }
+            }
+        }
+
+        if (termsDialogVisible) {
+            AlertDialog(
+                onDismissRequest = { },
+                title = { Text("EVREN LLM API · Kullanım Şartları") },
+                text = {
+                    Column(Modifier.fillMaxWidth().height(420.dp).verticalScroll(rememberScrollState())) {
+                        Text("Sürüm: ${termsVersion}", color = VexPurple, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(8.dp))
+                        Text(termsContent, color = VexText, fontSize = 12.sp, lineHeight = 17.sp)
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = termsVersion >= 0 && termsContent.isNotBlank() && !busy,
+                        onClick = {
+                            scope.launch {
+                                busy = true
+                                try {
+                                    evren.acceptTerms(termsVersion)
+                                    termsAccepted = true
+                                    termsDialogVisible = false
+                                    termsStatusMessage = "EVREN terms accepted (version ${termsVersion})."
+                                    finishServiceConnection()
+                                } catch (e: Exception) {
+                                    errorMessage = e.message ?: "Could not accept EVREN terms."
+                                } finally { busy = false }
+                            }
+                        }
+                    ) { Text("Okudum ve kabul ediyorum") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        termsDialogVisible = false
+                        termsStatusMessage = "Terms not accepted. EVREN API calls remain locked."
+                        connectionMessage = "EVREN terms must be accepted before using chat or Agent."
+                    }) { Text("Şimdi değil") }
+                }
+            )
+        }
         errorMessage?.let { message ->
             TextButton(onClick = { errorMessage = null }, modifier = Modifier.fillMaxWidth()) {
                 Text("Error: $message  ·  Dismiss", color = Color(0xFFFCA5A5), fontSize = 11.sp)
@@ -358,7 +440,8 @@ private fun ConnectionPanel(
     evrenKey: String, onEvrenKey: (String) -> Unit,
     githubToken: String, onGithubToken: (String) -> Unit,
     apiUrl: String, onApiUrl: (String) -> Unit,
-    status: String, busy: Boolean, onSaveAndValidate: () -> Unit
+    status: String, termsStatus: String, termsAccepted: Boolean,
+    busy: Boolean, onSaveAndValidate: () -> Unit
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
@@ -376,6 +459,7 @@ private fun ConnectionPanel(
             Text("Save & validate connections")
         }
         Text(status, color = VexMuted, fontSize = 12.sp)
+        Text(termsStatus, color = if (termsAccepted) Color(0xFF86EFAC) else Color(0xFFFCD34D), fontSize = 12.sp)
         Text("EVREN model catalog is loaded from /v1/models after successful validation. GitHub repositories are paginated until every accessible page has been read.", color = VexMuted, fontSize = 12.sp)
     }
 }
@@ -458,12 +542,22 @@ private fun FileBrowserPanel(
 @Composable
 private fun AgentPanel(
     repository: GitHubRepository?, branch: String, model: String,
-    input: String, onInput: (String) -> Unit, status: String,
+    modelDetails: EvrenModelDetails?, input: String, onInput: (String) -> Unit, status: String,
     result: AgentRunResult?, busy: Boolean, onRun: () -> Unit, onViewChanges: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Autonomous coding agent", color = VexText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text("${repository?.fullName ?: "No repository selected"} · $branch · ${model.ifBlank { "No model" }}", color = VexMuted, fontSize = 11.sp)
+        if (model == "auto") {
+            Text("Auto routing: fixed model capabilities are not available. Agent token budget: 4096.", color = VexMuted, fontSize = 11.sp)
+        } else if (modelDetails != null) {
+            Text(
+                "Context: ${modelDetails.contextLength?.toString() ?: "unknown"} · Output cap: ${modelDetails.defaultMaxOutputTokens?.toString() ?: "unknown"} · Agent budget: ${modelDetails.recommendedAgentBudget()} · Tools: ${modelDetails.tools?.toString() ?: "unknown"} · Thinking: ${modelDetails.thinking?.toString() ?: "unknown"}",
+                color = VexMuted, fontSize = 11.sp
+            )
+        } else {
+            Text("Loading model capabilities…", color = VexMuted, fontSize = 11.sp)
+        }
         OutlinedTextField(input, onInput, Modifier.fillMaxWidth().height(140.dp),
             label = { Text("Describe a coding task") },
             placeholder = { Text("Analyze the project, find the bug, propose a fix…") })
