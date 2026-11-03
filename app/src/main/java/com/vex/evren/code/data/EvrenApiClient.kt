@@ -52,9 +52,31 @@ class EvrenApiClient(
     suspend fun chatWithTools(model: String, tools: JSONArray, messages: JSONArray): JSONObject = withContext(Dispatchers.IO) {
         val payload = JSONObject().put("model", model).put("messages", messages)
             .put("temperature", 0.1).put("tools", tools).put("tool_choice", "auto")
-        val response = postChat(payload)
-        response.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
-            ?: throw IOException("EVREN response did not contain an assistant message.")
+        try {
+            val response = postChat(payload)
+            response.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
+                ?: throw IOException("EVREN response did not contain an assistant message.")
+        } catch (error: IOException) {
+            val message = error.message.orEmpty()
+            if (!message.contains("HTTP 400") && !message.contains("HTTP 404") && !message.contains("HTTP 422")) throw error
+            val fallbackMessages = JSONArray()
+            for (index in 0 until messages.length()) {
+                val item = messages.optJSONObject(index) ?: continue
+                fallbackMessages.put(JSONObject(item.toString()))
+            }
+            fallbackMessages.optJSONObject(0)?.let { system ->
+                system.put("content", system.optString("content") +
+                    "\n\nNative function calling is unavailable. Return exactly one JSON object per response: " +
+                    "{\"tool\":\"tool_name\",\"arguments\":{...}} to call a tool, or " +
+                    "{\"final\":\"answer text\"} to finish. Available tools: submit_plan(steps array), " +
+                    "list_files(path optional), read_file(path), propose_file_change(path, complete content), " +
+                    "finish_task(summary). Do not wrap JSON in markdown.")
+            }
+            val fallback = postChat(JSONObject().put("model", model).put("messages", fallbackMessages)
+                .put("temperature", 0.1).put("stream", false))
+            fallback.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
+                ?: throw IOException("EVREN fallback response did not contain an assistant message.")
+        }
     }
 
     private fun postChat(payload: JSONObject): JSONObject {
@@ -84,7 +106,7 @@ class EvrenApiClient(
         }
     }
     companion object {
-        const val DEFAULT_BASE_URL = "https://evren-llmapi.ssyz.org.tr/v1"
+        const val DEFAULT_BASE_URL = "https://evren.ssyz.org.tr/v1"
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }
