@@ -56,7 +56,13 @@ class GitHubApiClient(
 
     suspend fun getTree(fullName: String, branch: String): List<GitHubTreeEntry> = withContext(Dispatchers.IO) {
         val (owner, repo) = splitRepo(fullName)
-        val json = requestJson("GET", "/repos/$owner/$repo/git/trees/${encodePath(branch)}?recursive=1")
+        val ref = requestJson("GET", "/repos/$owner/$repo/git/ref/heads/${encodePath(branch)}")
+        val commitSha = ref.optJSONObject("object")?.optString("sha").orEmpty()
+        if (commitSha.isBlank()) throw IOException("Could not resolve branch '$branch'.")
+        val commit = requestJson("GET", "/repos/$owner/$repo/git/commits/$commitSha")
+        val treeSha = commit.optJSONObject("tree")?.optString("sha").orEmpty()
+        if (treeSha.isBlank()) throw IOException("Could not resolve the Git tree for '$branch'.")
+        val json = requestJson("GET", "/repos/$owner/$repo/git/trees/$treeSha?recursive=1")
         if (json.optBoolean("truncated")) throw IOException("GitHub truncated this repository tree. A narrower directory scan is required.")
         val tree = json.optJSONArray("tree") ?: JSONArray()
         buildList {
