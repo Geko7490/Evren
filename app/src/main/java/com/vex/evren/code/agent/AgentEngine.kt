@@ -126,14 +126,14 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 val entries = github.getTree(target.repository.fullName, target.branch)
                     .filter { prefix.isBlank() || it.path.startsWith("$prefix/") }
                     .take(160).joinToString("\n") { "${it.type}: ${it.path}" }
-                logs += "Dosyalar tarandı · ${target.repository.name}"
+                logs += "Dosyalar tarandı · ${target.repository.fullName.substringAfter('/')}"
                 entries.ifBlank { "Eşleşen dosya yok." }
             }
             "read_file" -> {
                 val target = resolveTarget(args, targets)
                 val path = safePath(args.getString("path"))
                 val file = github.readFile(target.repository.fullName, path, target.branch)
-                logs += "Dosya okundu · ${target.repository.name}/$path"
+                logs += "Dosya okundu · ${target.repository.fullName.substringAfter('/')}/$path"
                 "REPOSITORY: ${target.repository.fullName}\nPATH: $path\nBLOB_SHA: ${file.sha}\nCONTENT:\n${file.content.take(MAX_FILE_CHARS)}"
             }
             "propose_file_change" -> {
@@ -151,7 +151,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                     target.repository.fullName, target.branch, path,
                     previous?.content.orEmpty(), content, previous?.sha
                 )
-                logs += "Değişiklik hazır · ${target.repository.name}/$path"
+                logs += "Değişiklik hazır · ${target.repository.fullName.substringAfter('/')}/$path"
                 "Öneri hazırlandı: ${target.repository.fullName}/$path. GitHub'a yazılmadı; kullanıcı incelemesi gerekiyor."
             }
             "finish_task" -> {
