@@ -37,7 +37,20 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
             val assistant = evren.chatWithTools(model, tools(), messages)
             val calls = assistant.optJSONArray("tool_calls") ?: JSONArray()
             if (calls.length() == 0) {
-                val answer = assistant.optString("content").ifBlank { "The model returned an empty response." }
+                val content = assistant.optString("content")
+                val protocol = runCatching { JSONObject(content.trim().removePrefix("```json").removeSuffix("```").trim()) }.getOrNull()
+                if (protocol?.has("tool") == true) {
+                    val name = protocol.optString("tool")
+                    val args = protocol.optJSONObject("arguments") ?: JSONObject()
+                    onProgress("Running JSON tool · $name")
+                    val output = execute(name, args, repository, branch, changes, logs)
+                    if (name == "submit_plan") plan = args.optJSONArray("steps").asStringList()
+                    messages.put(JSONObject().put("role", "assistant").put("content", content))
+                    messages.put(JSONObject().put("role", "user").put("content", "Tool result for $name:\\n$output\\nContinue the task. Use another tool or return a final JSON object."))
+                    return@repeat
+                }
+                val answer = protocol?.optString("final")?.takeIf { it.isNotBlank() }
+                    ?: content.ifBlank { "The model returned an empty response." }
                 if (plan.isEmpty()) plan = extractPlan(answer)
                 return AgentRunResult(answer, plan, logs, changes.values.toList())
             }
