@@ -41,10 +41,13 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
     ): AgentRunResult {
         require(request.isNotBlank()) { "Bir görev açıklaması yazın." }
         require(targets.isNotEmpty() && targets.size <= 2) { "Agent aynı anda 1 veya 2 repo destekler." }
-        val indexes = targets.associate { target ->
-            target.repository.fullName to github.getTree(target.repository.fullName, target.branch)
+        val indexes = linkedMapOf<String, List<String>>()
+        targets.forEachIndexed { index, target ->
+            onProgress("Repo taranıyor ${index + 1}/${targets.size} · ${target.repository.fullName}")
+            indexes[target.repository.fullName] = github.getTree(target.repository.fullName, target.branch)
                 .filter { it.type == "blob" }.map { it.path }.take(300)
         }
+        onProgress("Dosya listesi hazır · Agent görevi başlatılıyor")
         val changes = linkedMapOf<String, ProposedChange>()
         val logs = mutableListOf<String>()
         var plan = emptyList<String>()
@@ -67,7 +70,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
             }))
 
         repeat(maxSteps.coerceIn(1, 40)) { step ->
-            onProgress("Düşünüyor · ${step + 1}/${maxSteps.coerceIn(1, 40)}")
+            onProgress("EVREN analiz ediyor · ${step + 1}/${maxSteps.coerceIn(1, 40)}")
             val assistant = evren.chatWithTools(model, tools(), messages, maxTokens)
             val calls = assistant.optJSONArray("tool_calls") ?: JSONArray()
             if (calls.length() == 0) {
