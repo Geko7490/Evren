@@ -13,7 +13,7 @@ data class AgentRunResult(val answer: String, val plan: List<String>, val toolLo
 class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubApiClient) {
     suspend fun run(
         model: String, request: String, repository: GitHubRepository, branch: String,
-        onProgress: (String) -> Unit
+        maxTokens: Int = 4096, onProgress: (String) -> Unit
     ): AgentRunResult {
         require(request.isNotBlank()) { "Enter a task for the agent." }
         val paths = github.getTree(repository.fullName, branch).filter { it.type == "blob" }
@@ -34,7 +34,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
 
         repeat(MAX_AGENT_STEPS) { step ->
             onProgress("Agent reasoning · step ${step + 1}/$MAX_AGENT_STEPS")
-            val assistant = evren.chatWithTools(model, tools(), messages)
+            val assistant = evren.chatWithTools(model, tools(), messages, maxTokens)
             val calls = assistant.optJSONArray("tool_calls") ?: JSONArray()
             if (calls.length() == 0) {
                 val content = assistant.optString("content")
