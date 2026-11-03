@@ -2,24 +2,32 @@
 
 Native Android coding agent powered by the EVREN LLM API and GitHub.
 
-## Project status
+## Current milestone
 
-The repository is being initialized. The first milestone is a native Kotlin + Jetpack Compose application with secure credential storage, EVREN model discovery, GitHub repository browsing, and a persistent agent foundation.
+The initial native Android foundation is implemented on the `feat/android-agent-foundation` branch.
 
-## Planned architecture
+Included:
+- Kotlin + Jetpack Compose Android application
+- Dark Vex visual identity
+- EVREN API key and GitHub PAT entry screen
+- AES-GCM credential vault backed by Android Keystore
+- Android GitHub Actions debug build workflow
 
-- Kotlin + Jetpack Compose
-- MVVM / Clean Architecture
-- EVREN OpenAI-compatible API client
-- GitHub REST API integration
-- Android Keystore-backed credential protection
-- Room task history and repository metadata
-- GitHub Actions Android builds
-
-## Security
-
-Never commit API keys, GitHub tokens, `.env` files, or private project data. AI-generated changes must be reviewed before remote commits or other irreversible actions.
+Next:
+- EVREN model discovery and chat API
+- GitHub authentication and full repository pagination
+- Repository tree and file reader
+- Persistent Agent task orchestration
+- Validated tools, code diffs, branch workflow, and remote builds
 
 ## Build
 
-The Android Gradle project and GitHub Actions workflow are being added in the initial implementation milestone.
+Requires JDK 17 and Android SDK 35.
+
+```bash
+gradle assembleDebug
+```
+
+## Security
+
+Never commit API keys, GitHub tokens, environment files, or private project data. Credentials are stored locally using an Android Keystore-backed AES-GCM key. Repository content is untrusted input and must never be treated as executable agent instructions.
