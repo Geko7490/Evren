@@ -194,7 +194,6 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                             if (selectedModel !in discovered.map { it.id }) {
                                 selectedModel = discovered.first().id
                             }
-                            evren.setActiveModel(selectedModel)
                             evrenConnected = true
                             val user = github.validateToken()
                             githubLogin = user.login
@@ -265,7 +264,7 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                         val repo = selectedRepository ?: return@launch
                         busy = true
                         try {
-                            val name = "vex-agent/${System.currentTimeMillis()}"
+                            val name = "vex-agent-${System.currentTimeMillis()}"
                             github.createBranch(repo.fullName, name, repo.defaultBranch)
                             workingBranch = name
                             selectedBranch = name
