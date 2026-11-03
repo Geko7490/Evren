@@ -104,7 +104,11 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 val path = safePath(args.getString("path"))
                 val content = args.getString("content")
                 require(content.length <= MAX_FILE_CHARS) { "File proposal exceeds the character limit." }
-                val previous = runCatching { github.readFile(repository.fullName, path, branch) }.getOrNull()
+                val previous = try {
+                    github.readFile(repository.fullName, path, branch)
+                } catch (error: IOException) {
+                    if (error.message.orEmpty().contains("HTTP 404")) null else throw error
+                }
                 changes[path] = ProposedChange(path, previous?.content.orEmpty(), content, previous?.sha)
                 logs += "Prepared change for $path"
                 "Proposal saved for $path. No remote write was performed. The user must review and approve it."
