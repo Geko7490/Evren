@@ -140,7 +140,11 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
     LaunchedEffect(Unit) {
         evrenKey = vault.read("evren_api_key").orEmpty()
         githubToken = vault.read("github_pat").orEmpty()
-        apiUrl = vault.read("evren_base_url") ?: EvrenApiClient.DEFAULT_BASE_URL
+        val savedApiUrl = vault.read("evren_base_url")
+        apiUrl = if (savedApiUrl.isNullOrBlank() || savedApiUrl == "https://evren.ssyz.org.tr/v1") {
+            vault.save("evren_base_url", EvrenApiClient.DEFAULT_BASE_URL)
+            EvrenApiClient.DEFAULT_BASE_URL
+        } else savedApiUrl
         if (evrenKey.isNotBlank() || githubToken.isNotBlank()) connectionMessage = "Saved credentials found. Validate connections to continue."
     }
 
