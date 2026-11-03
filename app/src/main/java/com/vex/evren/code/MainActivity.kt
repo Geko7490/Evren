@@ -71,7 +71,7 @@ class MainActivity : ComponentActivity() {
             apiKey = { vault.read("evren_api_key") },
             baseUrl = { vault.read("evren_base_url") ?: EvrenApiClient.DEFAULT_BASE_URL }
         )
-        val github = GitHubApiClient { vault.read("github_pat") }
+        val github = GitHubApiClient(token = { vault.read("github_pat") })
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 primary = VexPurple, background = VexBackground, surface = VexSurface,
