@@ -311,6 +311,7 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                 branch = workingBranch,
                 model = selectedModel,
                 modelDetails = modelDetails,
+                termsAccepted = termsAccepted,
                 input = taskInput,
                 onInput = { taskInput = it },
                 status = agentStatus,
@@ -318,7 +319,8 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                 busy = busy,
                 onRun = {
                     val repo = selectedRepository
-                    if (repo == null) errorMessage = "Select a repository first."
+                    if (!termsAccepted) errorMessage = "Read and accept EVREN API terms before running the Agent."
+                    else if (repo == null) errorMessage = "Select a repository first."
                     else if (selectedModel.isBlank()) errorMessage = "Connect EVREN and select a model."
                     else if (workingBranch == repo.defaultBranch) errorMessage = "Create a dedicated working branch in Files before running code changes."
                     else scope.launch {
@@ -542,7 +544,8 @@ private fun FileBrowserPanel(
 @Composable
 private fun AgentPanel(
     repository: GitHubRepository?, branch: String, model: String,
-    modelDetails: EvrenModelDetails?, input: String, onInput: (String) -> Unit, status: String,
+    modelDetails: EvrenModelDetails?, termsAccepted: Boolean,
+    input: String, onInput: (String) -> Unit, status: String,
     result: AgentRunResult?, busy: Boolean, onRun: () -> Unit, onViewChanges: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -552,7 +555,7 @@ private fun AgentPanel(
             Text("Auto routing: fixed model capabilities are not available. Agent token budget: 4096.", color = VexMuted, fontSize = 11.sp)
         } else if (modelDetails != null) {
             Text(
-                "Context: ${modelDetails.contextLength?.toString() ?: "unknown"} · Output cap: ${modelDetails.defaultMaxOutputTokens?.toString() ?: "unknown"} · Agent budget: ${modelDetails.recommendedAgentBudget()} · Tools: ${modelDetails.tools?.toString() ?: "unknown"} · Thinking: ${modelDetails.thinking?.toString() ?: "unknown"}",
+                "Context: ${modelDetails.contextLength?.toString() ?: "unknown"} · Output cap: ${modelDetails.defaultMaxOutputTokens?.toString() ?: "unknown"} · Agent budget: ${modelDetails.recommendedAgentBudget()} · Tools: ${modelDetails.tools?.toString() ?: "unknown"} · Thinking: ${modelDetails.thinking?.toString() ?: "unknown"} · Vision: ${modelDetails.vision?.toString() ?: "unknown"} · Precision: ${modelDetails.precision ?: "unknown"}",
                 color = VexMuted, fontSize = 11.sp
             )
         } else {
@@ -561,7 +564,7 @@ private fun AgentPanel(
         OutlinedTextField(input, onInput, Modifier.fillMaxWidth().height(140.dp),
             label = { Text("Describe a coding task") },
             placeholder = { Text("Analyze the project, find the bug, propose a fix…") })
-        Button(onClick = onRun, enabled = !busy && repository != null && model.isNotBlank() && input.isNotBlank(),
+        Button(onClick = onRun, enabled = !busy && termsAccepted && repository != null && model.isNotBlank() && input.isNotBlank(),
             modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) { Text("Run Agent") }
         Text(status, color = VexPurple, fontSize = 12.sp)
         result?.let { output ->
