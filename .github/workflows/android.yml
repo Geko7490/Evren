@@ -1,7 +1,7 @@
 name: Android CI
 
 concurrency:
-  group: android-ci-${{ github.ref }}
+  group: android-ci-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 on:
@@ -17,6 +17,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,7 +29,7 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
       - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+        run: gradle --no-daemon --console=plain --stacktrace assembleDebug
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
