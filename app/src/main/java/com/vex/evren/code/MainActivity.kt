@@ -364,9 +364,10 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                             val targets = mutableListOf(AgentTarget(repo, workingBranch))
                             selectedSecondaryRepository?.let { secondRepo ->
                                 if (secondaryWorkingBranch.isBlank() || secondaryBranchRepository != secondRepo.fullName) {
-                                    secondaryWorkingBranch = "vex-agent-${System.currentTimeMillis()}-secondary"
+                                    val newBranch = "vex-agent-${System.currentTimeMillis()}-secondary"
+                                    github.createBranch(secondRepo.fullName, newBranch, secondRepo.defaultBranch)
+                                    secondaryWorkingBranch = newBranch
                                     secondaryBranchRepository = secondRepo.fullName
-                                    github.createBranch(secondRepo.fullName, secondaryWorkingBranch, secondRepo.defaultBranch)
                                 }
                                 targets += AgentTarget(secondRepo, secondaryWorkingBranch)
                             }
@@ -752,7 +753,7 @@ private fun ChangesPanel(
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(proposals, key = { "${it.repositoryFullName}:${it.path}" }) { change ->
                     OutlinedButton(onClick = { onSelect(change) }, modifier = Modifier.fillMaxWidth()) {
-                        Text("${change.repositoryFullName} · ${change.path}", color = if (active?.repositoryFullName == change.repositoryFullName && active.path == change.path) VexPurple else VexText)
+                        Text("${change.repositoryFullName} · ${change.path}", color = if (active?.let { it.repositoryFullName == change.repositoryFullName && it.path == change.path } == true) VexPurple else VexText)
                     }
                 }
             }
