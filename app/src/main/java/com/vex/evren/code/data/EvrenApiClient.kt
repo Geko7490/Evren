@@ -13,6 +13,14 @@ import java.util.concurrent.TimeUnit
 
 data class EvrenModel(val id: String, val displayName: String = id)
 
+data class EvrenModelDetails(
+    val id: String, val contextLength: Int?, val defaultMaxOutputTokens: Int?,
+    val tools: Boolean?, val thinking: Boolean?, val vision: Boolean?, val precision: String?
+) {
+    fun recommendedAgentBudget(): Int =
+        defaultMaxOutputTokens?.let { minOf(4096, it).coerceAtLeast(1) } ?: 4096
+}
+
 class EvrenApiClient(
     private val apiKey: () -> String?,
     private val baseUrl: () -> String = { DEFAULT_BASE_URL },
@@ -20,6 +28,54 @@ class EvrenApiClient(
         .connectTimeout(20, TimeUnit.SECONDS).readTimeout(150, TimeUnit.SECONDS).build()
 ) {
     suspend fun validateConnection(): List<EvrenModel> = listModels()
+
+    suspend fun getTermsStatus(): JSONObject = withContext(Dispatchers.IO) {
+        execute(authenticatedGet("/terms/status"))
+    }
+
+    suspend fun getTermsText(): Pair<Int, String> = withContext(Dispatchers.IO) {
+        val response = execute(authenticatedGet("/terms/text"))
+        val version = response.optInt("version", -1)
+        val content = response.optString("content")
+        if (version < 0 || content.isBlank()) throw IOException("EVREN terms response was incomplete.")
+        version to content
+    }
+
+    suspend fun acceptTerms(version: Int): JSONObject = withContext(Dispatchers.IO) {
+        val payload = JSONObject().put("version", version)
+        execute(Request.Builder().url("${normalizedBaseUrl()}/terms/accept")
+            .header("Authorization", "Bearer ${requireKey()}")
+            .header("Content-Type", "application/json")
+            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE)).build())
+    }
+
+    suspend fun getModelDetails(model: String): EvrenModelDetails = withContext(Dispatchers.IO) {
+        require(model.isNotBlank() && model != "auto") { "Automatic routing has no fixed model card." }
+        val encoded = java.net.URLEncoder.encode(model, "UTF-8").replace("+", "%20")
+        val response = execute(authenticatedGet("/models/$encoded"))
+        val capabilities = response.optJSONObject("capabilities")
+        EvrenModelDetails(
+            id = response.optString("id", model),
+            contextLength = response.optIntOrNull("context_length"),
+            defaultMaxOutputTokens = response.optIntOrNull("default_max_output_tokens"),
+            tools = capabilities?.optBooleanOrNull("tools"),
+            thinking = capabilities?.optBooleanOrNull("thinking"),
+            vision = capabilities?.optBooleanOrNull("vision"),
+            precision = response.optString("precision").takeIf { it.isNotBlank() && it != "null" }
+        )
+    }
+
+    private fun authenticatedGet(path: String): Request = Request.Builder()
+        .url("${normalizedBaseUrl()}$path")
+        .header("Authorization", "Bearer ${requireKey()}")
+        .header("Accept", "application/json")
+        .get().build()
+
+    private fun JSONObject.optIntOrNull(key: String): Int? =
+        if (has(key) && !isNull(key)) optInt(key).takeIf { it > 0 } else null
+
+    private fun JSONObject.optBooleanOrNull(key: String): Boolean? =
+        if (has(key) && !isNull(key)) optBoolean(key) else null
 
     suspend fun listModels(): List<EvrenModel> = withContext(Dispatchers.IO) {
         val json = execute(Request.Builder().url("${normalizedBaseUrl()}/models")
@@ -49,9 +105,13 @@ class EvrenApiClient(
                 ?: throw IOException("EVREN returned an empty assistant response.")
         }
 
-    suspend fun chatWithTools(model: String, tools: JSONArray, messages: JSONArray): JSONObject = withContext(Dispatchers.IO) {
+    suspend fun chatWithTools(
+        model: String, tools: JSONArray, messages: JSONArray, maxTokens: Int = 4096
+    ): JSONObject = withContext(Dispatchers.IO) {
+        val safeMaxTokens = maxTokens.coerceAtLeast(1)
         val payload = JSONObject().put("model", model).put("messages", messages)
-            .put("temperature", 0.1).put("tools", tools).put("tool_choice", "auto")
+            .put("temperature", 0.1).put("max_tokens", safeMaxTokens)
+            .put("tools", tools).put("tool_choice", "auto")
         try {
             val response = postChat(payload)
             response.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
@@ -73,7 +133,7 @@ class EvrenApiClient(
                     "finish_task(summary). Do not wrap JSON in markdown.")
             }
             val fallback = postChat(JSONObject().put("model", model).put("messages", fallbackMessages)
-                .put("temperature", 0.1).put("stream", false))
+                .put("temperature", 0.1).put("max_tokens", safeMaxTokens).put("stream", false))
             fallback.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
                 ?: throw IOException("EVREN fallback response did not contain an assistant message.")
         }
@@ -106,7 +166,7 @@ class EvrenApiClient(
         }
     }
     companion object {
-        const val DEFAULT_BASE_URL = "https://evren.ssyz.org.tr/v1"
+        const val DEFAULT_BASE_URL = "https://evren-llmapi.ssyz.org.tr/v1"
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }
