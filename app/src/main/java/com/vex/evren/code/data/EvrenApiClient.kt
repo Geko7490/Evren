@@ -111,7 +111,7 @@ class EvrenApiClient(
         val safeMaxTokens = maxTokens.coerceAtLeast(1)
         val payload = JSONObject().put("model", model).put("messages", messages)
             .put("temperature", 0.1).put("max_tokens", safeMaxTokens)
-            .put("tools", tools).put("tool_choice", "auto")
+            .put("tools", tools).put("tool_choice", "auto").put("stream", false)
         try {
             val response = postChat(payload)
             response.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
