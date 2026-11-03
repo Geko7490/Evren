@@ -129,8 +129,10 @@ class EvrenApiClient(
                     "\n\nNative function calling is unavailable. Return exactly one JSON object per response: " +
                     "{\"tool\":\"tool_name\",\"arguments\":{...}} to call a tool, or " +
                     "{\"final\":\"answer text\"} to finish. Available tools: submit_plan(steps array), " +
-                    "list_files(path optional), read_file(path), propose_file_change(path, complete content), " +
-                    "finish_task(summary). Do not wrap JSON in markdown.")
+                    "list_files(repository, path optional), read_file(repository, path), " +
+                    "propose_file_change(repository, path, complete content), finish_task(summary). " +
+                    "The repository argument must be the exact owner/repo name from the connected repository list. " +
+                    "Do not wrap JSON in markdown.")
             }
             val fallback = postChat(JSONObject().put("model", model).put("messages", fallbackMessages)
                 .put("temperature", 0.1).put("max_tokens", safeMaxTokens).put("stream", false))
