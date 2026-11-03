@@ -349,10 +349,13 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                     else if (workingBranch == repo.defaultBranch) errorMessage = "Önce Files sekmesinden ana repo için çalışma dalı oluşturun."
                     else scope.launch {
                         busy = true
+                        agentStatus = "Agent hazırlanıyor · model kontrol ediliyor"
+                        errorMessage = null
                         agentResult = null
                         proposals.clear()
                         try {
                             val details = modelDetails ?: if (selectedModel == "auto") null else evren.getModelDetails(selectedModel)
+                            agentStatus = "Repo erişimi ve çalışma dalları kontrol ediliyor"
                             if (details?.tools == false) {
                                 throw IllegalStateException("Seçilen EVREN modeli Tool Calling desteklemiyor.")
                             }
