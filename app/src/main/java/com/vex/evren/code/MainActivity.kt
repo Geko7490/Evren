@@ -112,6 +112,7 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
     var secondaryBranchRepository by remember { mutableStateOf("") }
     var agentMaxPower by remember { mutableStateOf(false) }
     var agentAutopilot by remember { mutableStateOf(false) }
+    var agentFullAccess by remember { mutableStateOf(false) }
     var selectedBranch by remember { mutableStateOf("") }
     var workingBranch by remember { mutableStateOf("") }
     val tree = remember { mutableStateListOf<GitHubTreeEntry>() }
@@ -352,6 +353,8 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                 onMaxPower = { agentMaxPower = it },
                 autopilot = agentAutopilot,
                 onAutopilot = { agentAutopilot = it },
+                fullAccess = agentFullAccess,
+                onFullAccess = { agentFullAccess = it },
                 input = taskInput,
                 onInput = { taskInput = it },
                 status = agentStatus,
@@ -415,11 +418,12 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                                 }
                                 val result = AgentEngine(evren, github).run(
                                     selectedModel, fullRequest, targets, tokenBudget,
-                                    if (agentAutopilot) 30 else 12
+                                    if (agentAutopilot) 30 else 12,
+                                    fullAccess = agentFullAccess
                                 ) { agentStatus = it }
                                 agentResult = result
                                 proposals.addAll(result.changes)
-                                agentStatus = "Tamamlandı · ${result.changes.size} değişiklik önerisi"
+                                agentStatus = if (agentFullAccess) "Tamamlandı · ${result.toolLog.count { it.contains("GitHub'a yazıldı") || it.contains("Dosya silindi") }} doğrudan GitHub işlemi" else "Tamamlandı · ${result.changes.size} değişiklik önerisi"
                             } catch (e: Exception) {
                                 agentStatus = e.message ?: "Agent başarısız."
                                 errorMessage = agentStatus
@@ -632,6 +636,7 @@ private fun AgentPanel(
     evren: EvrenApiClient,
     maxPower: Boolean, onMaxPower: (Boolean) -> Unit,
     autopilot: Boolean, onAutopilot: (Boolean) -> Unit,
+    fullAccess: Boolean, onFullAccess: (Boolean) -> Unit,
     input: String, onInput: (String) -> Unit, status: String,
     result: AgentRunResult?, busy: Boolean, onRun: (String) -> Unit, onViewChanges: () -> Unit
 ) {
@@ -716,11 +721,15 @@ private fun AgentPanel(
                     }
                     androidx.compose.material3.Switch(checked = autopilot, onCheckedChange = onAutopilot)
                 }
-                Text(
-                    if (autopilot) "Autopilot: 30 Agent adımına kadar, görev sırasını kendi belirler."
-                    else "Standart: 12 Agent adımına kadar, kontrollü ilerler.",
-                    color = VexMuted, fontSize = 10.sp
-                )
+                Text(if (autopilot) "Autopilot: uzun görevler için genişletilmiş Agent çalışma döngüsü." else "Standart: kontrollü Agent çalışma döngüsü.", color = VexMuted, fontSize = 10.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Full Access Mode", color = VexText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Dosya oluşturma, değiştirme ve silme işlemlerini seçili çalışma dalına doğrudan commit eder. Dosya başına onay istemez.", color = VexMuted, fontSize = 10.sp)
+                    }
+                    androidx.compose.material3.Switch(checked = fullAccess, onCheckedChange = onFullAccess)
+                }
+                Text(if (fullAccess) "FULL ACCESS AÇIK · Çalışma dallarında doğrudan yazma/silme." else "Full Access kapalı · Değişiklikler manuel onay bekler.", color = if (fullAccess) VexPurple else VexMuted, fontSize = 10.sp)
             }
         }
 
