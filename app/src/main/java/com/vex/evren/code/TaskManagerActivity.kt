@@ -35,6 +35,9 @@ class TaskManagerActivity : ComponentActivity() {
                                     Text(task.request, color=Color.White, fontSize=13.sp)
                                     Text("${task.status} · ${task.progress}", color=Color(0xFFA855F7), fontSize=11.sp)
                                     task.error?.let { Text(it, color=Color(0xFFFCA5A5), fontSize=11.sp) }
+                                    task.answer?.takeIf { it.isNotBlank() }?.let {
+                                        Text(it, color=Color(0xFFD4D4D8), fontSize=11.sp)
+                                    }
                                     Row {
                                         if(task.status==AgentRunService.STATUS_PAUSED || task.status==AgentRunService.STATUS_FAILED) {
                                             TextButton(onClick={
