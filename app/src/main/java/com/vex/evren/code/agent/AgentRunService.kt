@@ -24,7 +24,11 @@ class AgentRunService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, buildNotification("EVREN Agent", "Görev hazırlanıyor"))
-        when (intent?.action) {
+        if (intent == null) {
+            scope.launch { dao.latestRunning()?.let { execute(it) } ?: stopService() }
+            return START_STICKY
+        }
+        when (intent.action) {
             ACTION_START -> scope.launch { val task = fromIntent(intent); dao.upsert(task); execute(task) }
             ACTION_RESUME -> scope.launch { dao.get(intent.getStringExtra(EXTRA_ID).orEmpty())?.let { execute(it) } ?: stopService() }
             ACTION_PAUSE -> { cancelRequested = false; runner?.cancel(CancellationException("pause")) }
