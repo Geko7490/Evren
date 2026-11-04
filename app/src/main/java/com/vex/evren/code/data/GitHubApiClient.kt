@@ -115,6 +115,34 @@ class GitHubApiClient(
                 ?: throw IOException("GitHub did not return a deletion commit SHA.")
         }
 
+    suspend fun getCommitWorkflowStatus(fullName: String, commitSha: String): String = withContext(Dispatchers.IO) {
+        val (owner, repo) = splitRepo(fullName)
+        val runsResponse = requestJson("GET", "/repos/$owner/$repo/actions/runs?head_sha=$commitSha&per_page=10")
+        val runs = runsResponse.optJSONArray("workflow_runs") ?: JSONArray()
+        if (runs.length() == 0) return@withContext "No GitHub Actions run has appeared for commit $commitSha yet. Check again shortly."
+        buildString {
+            for (index in 0 until runs.length()) {
+                val run = runs.optJSONObject(index) ?: continue
+                val runId = run.optLong("id")
+                appendLine("Workflow: ${run.optString("name")} · status=${run.optString("status")} · conclusion=${run.optString("conclusion")}")
+                appendLine("URL: ${run.optString("html_url")}")
+                if (run.optString("status") == "completed") {
+                    val jobs = requestJson("GET", "/repos/$owner/$repo/actions/runs/$runId/jobs?per_page=100")
+                        .optJSONArray("jobs") ?: JSONArray()
+                    for (jobIndex in 0 until jobs.length()) {
+                        val job = jobs.optJSONObject(jobIndex) ?: continue
+                        appendLine("Job: ${job.optString("name")} · ${job.optString("conclusion")}")
+                        val steps = job.optJSONArray("steps") ?: JSONArray()
+                        for (stepIndex in 0 until steps.length()) {
+                            val step = steps.optJSONObject(stepIndex) ?: continue
+                            if (step.optString("conclusion") == "failure") appendLine("FAILED STEP: ${step.optString("name")}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun requestJson(method: String, path: String, payload: JSONObject? = null): JSONObject {
         val raw = requestRaw(method, path, payload)
         return try { JSONObject(raw) } catch (e: Exception) { throw IOException("Invalid GitHub JSON response.", e) }
