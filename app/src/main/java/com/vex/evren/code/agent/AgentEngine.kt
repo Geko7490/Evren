@@ -6,6 +6,7 @@ import com.vex.evren.code.data.GitHubActionsClient
 import com.vex.evren.code.data.GitHubRepository
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.io.IOException
 
 data class AgentTarget(val repository: GitHubRepository, val branch: String)
@@ -24,7 +25,7 @@ data class AgentRunResult(
     val changes: List<ProposedChange>
 )
 
-class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubApiClient, private val actions: GitHubActionsClient? = null) {
+class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubApiClient, private val actions: GitHubActionsClient? = null, private val artifactDirectory: File? = null) {
     suspend fun run(
         model: String, request: String, repository: GitHubRepository, branch: String,
         maxTokens: Int = 4096, onProgress: (String) -> Unit
@@ -262,6 +263,20 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                     client.artifacts(target.repository.fullName, runId).forEach { a -> appendLine(a.name + " · id=" + a.id + " · " + a.sizeBytes + " bytes · expired=" + a.expired) }
                 }
             }
+            "download_artifact" -> {
+                val target = resolveTarget(args, targets)
+                val client = actions ?: throw IllegalStateException("GitHub Actions client is unavailable.")
+                val directory = artifactDirectory ?: throw IllegalStateException("Artifact storage directory is unavailable.")
+                val artifactId = args.getLong("artifact_id")
+                val artifact = client.artifacts(target.repository.fullName, args.getLong("run_id"))
+                    .firstOrNull { it.id == artifactId } ?: throw IOException("Artifact was not found in the selected run.")
+                require(!artifact.expired) { "Artifact retention period has expired." }
+                val safeName = artifact.name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(80)
+                val destination = File(directory, "${safeName}-${artifact.id}.zip")
+                val (bytes, sha256) = client.downloadArtifact(target.repository.fullName, artifact.id, destination)
+                logs += "Artifact indirildi · ${destination.name} · $bytes bytes"
+                "Artifact indirildi. Dosya: ${destination.absolutePath} · Boyut: $bytes bytes · SHA-256: $sha256. Dosya uygulamanın Downloads klasöründe saklandı."
+            }
             "delete_file" -> {
                 require(fullAccess) { "Dosya silmek için Full Access Mode açılmalıdır." }
                 val target = resolveTarget(args, targets)
@@ -363,7 +378,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         "list_files" -> "Dosyalar inceleniyor"
         "read_file" -> "Kod okunuyor"
         "propose_file_change" -> "Değişiklik hazırlanıyor"
-        "finish_task" -> "Son kontrol yapılıyor"
+        "download_artifact" -> "Build artifact indiriliyor"\n        "finish_task" -> "Son kontrol yapılıyor"
         else -> "Agent çalışıyor"
     }
 
@@ -390,6 +405,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         put(functionTool("list_workflows", "List GitHub Actions workflows for a connected repository.", """{"type":"object","properties":{$repoProperty},"required":["repository"]}"""))
         put(functionTool("list_builds", "List recent GitHub Actions runs for the selected branch.", """{"type":"object","properties":{$repoProperty"limit":{"type":"integer","minimum":1,"maximum":30}},"required":["repository"]}"""))
         put(functionTool("inspect_build", "Inspect a GitHub Actions run, jobs, failed step logs and artifacts.", """{"type":"object","properties":{$repoProperty"run_id":{"type":"integer"}},"required":["repository","run_id"]}"""))
+        put(functionTool("download_artifact", "Download a non-expired ZIP artifact from a selected GitHub Actions run into the app Downloads folder.", """{"type":"object","properties":{$repoProperty"run_id":{"type":"integer"},"artifact_id":{"type":"integer"}},"required":["repository","run_id","artifact_id"]}"""))
         if (fullAccess) put(functionTool("dispatch_build", "Trigger a GitHub Actions workflow_dispatch build on the selected branch.", """{"type":"object","properties":{$repoProperty"workflow":{"type":"string"}},"required":["repository","workflow"]}"""))
         put(functionTool("finish_task", "Finish and summarize the task.", """{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}"""))
     }
