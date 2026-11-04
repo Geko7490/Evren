@@ -1,7 +1,7 @@
 package com.vex.evren.code.data
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withContext\nimport kotlinx.coroutines.delay
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -57,6 +57,19 @@ class GitHubActionsClient(
         val payload = JSONObject().put("ref", branch).put("inputs", inputs)
         request("POST", "/repos/$owner/$repo/actions/workflows/${enc(workflowIdOrFile)}/dispatches", payload)
         Unit
+    }
+
+    suspend fun waitForRun(repository: String, runId: Long, timeoutMinutes: Int = 20): ActionsRun {
+        val (owner, repo) = splitRepo(repository)
+        repeat(timeoutMinutes.coerceIn(1, 20) * 6) {
+            val r = json("GET", "/repos/$owner/$repo/actions/runs/$runId")
+            val run = ActionsRun(r.optLong("id"), r.optString("name"), r.optString("head_branch"),
+                r.optString("status"), r.optString("conclusion").takeUnless { it == "null" || it.isBlank() },
+                r.optInt("run_number"), r.optString("html_url"), r.optString("head_sha"))
+            if (run.status == "completed") return run
+            delay(10_000)
+        }
+        throw IOException("GitHub Actions run $runId did not finish within the selected timeout.")
     }
 
     suspend fun jobs(repository: String, runId: Long): List<JSONObject> = io {
