@@ -99,7 +99,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                     val name = protocol.optString("tool")
                     val args = protocol.optJSONObject("arguments") ?: JSONObject()
                     onProgress(toolStatus(name))
-                    val output = execute(name, args, targets, changes, logs, fullAccess)
+                    val output = execute(name, args, targets, changes, logs, fullAccess, contextLength)
                     if (name == "submit_plan") plan = args.optJSONArray("steps").asStringList()
                     if (name == "finish_task") {
                         return AgentRunResult(output, plan, logs, changes.values.toList())
@@ -121,7 +121,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 val args = runCatching { JSONObject(function.optString("arguments")) }
                     .getOrElse { JSONObject() }
                 onProgress(toolStatus(name))
-                val output = execute(name, args, targets, changes, logs, fullAccess)
+                val output = execute(name, args, targets, changes, logs, fullAccess, contextLength)
                 if (name == "submit_plan") plan = args.optJSONArray("steps").asStringList()
                 messages.put(JSONObject().put("role", "tool")
                     .put("tool_call_id", call.optString("id")).put("content", output))
@@ -138,7 +138,8 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
 
     private suspend fun execute(
         name: String, args: JSONObject, targets: List<AgentTarget>,
-        changes: MutableMap<String, ProposedChange>, logs: MutableList<String>, fullAccess: Boolean
+        changes: MutableMap<String, ProposedChange>, logs: MutableList<String>, fullAccess: Boolean,
+        contextLength: Int?
     ): String = try {
         when (name) {
             "submit_plan" -> {
