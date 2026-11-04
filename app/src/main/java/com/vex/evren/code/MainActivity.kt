@@ -1,6 +1,9 @@
 package com.vex.evren.code
 
 import android.os.Bundle
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -74,6 +77,11 @@ private val VexText = Color(0xFFF5F5F7)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7021)
+        }
         val vault = CredentialVault(this)
         val evren = EvrenApiClient(
             apiKey = { vault.read("evren_api_key") },
@@ -453,6 +461,7 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                                 }
                                 appContext.startForegroundService(serviceIntent)
                                 agentStatus = "Arka plan görevi başlatıldı · $taskId"
+                            } catch (e: Exception) {
                                 agentStatus = e.message ?: "Agent başarısız."
                                 errorMessage = agentStatus
                             } finally {
