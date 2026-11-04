@@ -1,6 +1,9 @@
 package com.vex.evren.code
 
-import android.content.Intent\nimport android.net.Uri\nimport java.io.File\nimport androidx.core.content.FileProvider
+import android.content.Intent
+import android.net.Uri
+import java.io.File
+import androidx.core.content.FileProvider
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
