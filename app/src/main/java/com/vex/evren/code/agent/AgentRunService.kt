@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.vex.evren.code.CredentialVault
 import com.vex.evren.code.data.*
@@ -17,6 +18,7 @@ class AgentRunService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val dao by lazy { AgentTaskDatabase.get(this).tasks() }
     private var runner: Job? = null
+    private var cpuWakeLock: PowerManager.WakeLock? = null
     @Volatile private var cancelRequested = false
 
     override fun onCreate() { super.onCreate(); createChannel() }
@@ -51,6 +53,7 @@ class AgentRunService : Service() {
     private suspend fun execute(task: AgentTaskRecord) {
         if (runner?.isActive == true) return
         cancelRequested = false
+        acquireCpuWakeLock()
         dao.setState(task.id, STATUS_RUNNING, "Agent arka planda çalışıyor")
         notifyProgress("Agent çalışıyor", task.request.take(80))
         runner = scope.launch {
@@ -100,6 +103,7 @@ class AgentRunService : Service() {
                 notifyProgress("Agent hatası", e.message ?: "Bilinmeyen hata")
             } finally {
                 runner = null
+                releaseCpuWakeLock()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
@@ -116,6 +120,19 @@ class AgentRunService : Service() {
                 j.optString("htmlUrl"), j.optString("language").takeIf { it != "null" })
             AgentTarget(repo, j.getString("branch"))
         }
+    }
+
+    private fun acquireCpuWakeLock() {
+        if (cpuWakeLock?.isHeld == true) return
+        val power = getSystemService(POWER_SERVICE) as PowerManager
+        cpuWakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "EVREN:Agent").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+    private fun releaseCpuWakeLock() {
+        cpuWakeLock?.let { if (it.isHeld) it.release() }
+        cpuWakeLock = null
     }
 
     private fun hasInternet(): Boolean {
@@ -141,7 +158,7 @@ class AgentRunService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(title,text))
     }
     private suspend fun stopService() { stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
-    override fun onDestroy() { runner?.cancel(); scope.cancel(); super.onDestroy() }
+    override fun onDestroy() { runner?.cancel(); releaseCpuWakeLock(); scope.cancel(); super.onDestroy() }
 
     companion object {
         const val ACTION_START = "com.vex.evren.agent.START"
