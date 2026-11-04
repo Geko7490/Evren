@@ -1,6 +1,6 @@
 package com.vex.evren.code
 
-import android.content.Intent
+import android.content.Intent\nimport android.net.Uri\nimport java.io.File\nimport androidx.core.content.FileProvider
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -35,8 +35,23 @@ class TaskManagerActivity : ComponentActivity() {
                                     Text(task.request, color=Color.White, fontSize=13.sp)
                                     Text("${task.status} · ${task.progress}", color=Color(0xFFA855F7), fontSize=11.sp)
                                     task.error?.let { Text(it, color=Color(0xFFFCA5A5), fontSize=11.sp) }
-                                    task.answer?.takeIf { it.isNotBlank() }?.let {
-                                        Text(it, color=Color(0xFFD4D4D8), fontSize=11.sp)
+                                    task.answer?.takeIf { it.isNotBlank() }?.let { answer ->
+                                        Text(answer, color=Color(0xFFD4D4D8), fontSize=11.sp)
+                                        val artifactPath = Regex("Dosya: (.+?) ·").find(answer)?.groupValues?.getOrNull(1)
+                                        val artifactFile = artifactPath?.let(::File)
+                                        if (artifactFile?.isFile == true) {
+                                            TextButton(onClick = {
+                                                val uri = FileProvider.getUriForFile(this@TaskManagerActivity,
+                                                    "${BuildConfig.APPLICATION_ID}.fileprovider", artifactFile)
+                                                val share = Intent(Intent.ACTION_SEND).apply {
+                                                    type = "application/zip"
+                                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                                    clipData = android.content.ClipData.newUri(contentResolver, artifactFile.name, uri)
+                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                                }
+                                                startActivity(Intent.createChooser(share, "Artifact paylaş"))
+                                            }) { Text("APK / Artifact paylaş") }
+                                        }
                                     }
                                     Row {
                                         if(task.status==AgentRunService.STATUS_PAUSED || task.status==AgentRunService.STATUS_FAILED) {
