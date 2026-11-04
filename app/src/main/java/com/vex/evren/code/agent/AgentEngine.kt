@@ -72,7 +72,9 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
             }
         }
         val indexLimit = contextLength?.let { (it / 80).coerceIn(200, MAX_INDEXED_PATHS) } ?: 400
-        val targetText = targets.joinToString("\n\n") { target ->
+        val targetText = targets.joinToString("
+
+") { target ->
             buildString {
                 appendLine("REPOSITORY: ${target.repository.fullName}")
                 appendLine("BRANCH: ${target.branch}")
@@ -85,7 +87,9 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
             }
         }
         val initialMessages = JSONArray()
-            .put(JSONObject().put("role", "system").put("content", SYSTEM_PROMPT + if (fullAccess) "\n\nFULL ACCESS MODE: create, replace and delete repository files directly on selected working branches. Commit changes without per-file approval. Never modify the default branch or repository settings, secrets, collaborators, or permissions." else ""))
+            .put(JSONObject().put("role", "system").put("content", SYSTEM_PROMPT + if (fullAccess) "
+
+FULL ACCESS MODE: create, replace and delete repository files directly on selected working branches. Commit changes without per-file approval. Never modify the default branch or repository settings, secrets, collaborators, or permissions." else ""))
             .put(JSONObject().put("role", "user").put("content", buildString {
                 appendLine("Connected repositories:")
                 appendLine(targetText)
@@ -126,7 +130,9 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                         return AgentRunResult(output, plan, logs, changes.values.toList())
                     }
                     messages.put(JSONObject().put("role", "assistant").put("content", content))
-                    messages.put(JSONObject().put("role", "user").put("content", "Tool result:\n$output\nContinue."))
+                    messages.put(JSONObject().put("role", "user").put("content", "Tool result:
+$output
+Continue."))
                     onCheckpoint(encodeCheckpoint(messages, plan, logs, changes))
                     continue
                 }
@@ -176,11 +182,14 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 val prefix = args.optString("path").trim('/')
                 val entries = github.getTree(target.repository.fullName, target.branch)
                     .filter { prefix.isBlank() || it.path.startsWith("$prefix/") }
-                    .joinToString("\n") { "${it.type}: ${it.path}" }
+                    .joinToString("
+") { "${it.type}: ${it.path}" }
                 logs += "Dosyalar tarandı · ${target.repository.fullName.substringAfter('/')}"
                 if (entries.isBlank()) "Eşleşen dosya yok."
                 else if (entries.length > MAX_LISTING_CHARS) entries.take(MAX_LISTING_CHARS) +
-                    "\n\n[Listing shortened for context safety. Narrow the path filter to inspect more.]"
+                    "
+
+[Listing shortened for context safety. Narrow the path filter to inspect more.]"
                 else entries
             }
             "read_file" -> {
@@ -195,9 +204,15 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                         .coerceAtLeast(4_000L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                 )
                 val bounded = if (content.length > fileCharLimit) {
-                    content.take(fileCharLimit) + "\n\n[FILE CONTENT TRUNCATED FOR CONTEXT SAFETY. Read a narrower section or inspect targeted symbols.]"
+                    content.take(fileCharLimit) + "
+
+[FILE CONTENT TRUNCATED FOR CONTEXT SAFETY. Read a narrower section or inspect targeted symbols.]"
                 } else content
-                "REPOSITORY: ${target.repository.fullName}\nPATH: $path\nBLOB_SHA: ${file.sha}\nCONTENT:\n$bounded"
+                "REPOSITORY: ${target.repository.fullName}
+PATH: $path
+BLOB_SHA: ${file.sha}
+CONTENT:
+$bounded"
             }
             "propose_file_change" -> {
                 val target = resolveTarget(args, targets)
@@ -224,7 +239,8 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
             "list_workflows" -> {
                 val target = resolveTarget(args, targets)
                 val client = actions ?: throw IllegalStateException("GitHub Actions client is unavailable.")
-                client.listWorkflows(target.repository.fullName).joinToString("\n") { item ->
+                client.listWorkflows(target.repository.fullName).joinToString("
+") { item ->
                     item.optString("name") + " · " + item.optString("state") + " · " + item.optString("path") + " · id=" + item.optLong("id")
                 }.ifBlank { "Bu depoda workflow bulunamadı." }
             }
@@ -242,7 +258,8 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
             "list_builds" -> {
                 val target = resolveTarget(args, targets)
                 val client = actions ?: throw IllegalStateException("GitHub Actions client is unavailable.")
-                client.listRuns(target.repository.fullName, target.branch, args.optInt("limit", 10)).joinToString("\n") { run ->
+                client.listRuns(target.repository.fullName, target.branch, args.optInt("limit", 10)).joinToString("
+") { run ->
                     "Run #" + run.runNumber + " · " + run.name + " · " + run.status + "/" + (run.conclusion ?: "pending") + " · id=" + run.id + " · " + run.htmlUrl
                 }.ifBlank { "Bu branch için build bulunamadı." }
             }
@@ -387,7 +404,9 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         "list_files" -> "Dosyalar inceleniyor"
         "read_file" -> "Kod okunuyor"
         "propose_file_change" -> "Değişiklik hazırlanıyor"
-        "download_artifact" -> "Build artifact indiriliyor"\n        "wait_build" -> "Build sonucu bekleniyor"\n        "finish_task" -> "Son kontrol yapılıyor"
+        "download_artifact" -> "Build artifact indiriliyor"
+        "wait_build" -> "Build sonucu bekleniyor"
+        "finish_task" -> "Son kontrol yapılıyor"
         else -> "Agent çalışıyor"
     }
 
