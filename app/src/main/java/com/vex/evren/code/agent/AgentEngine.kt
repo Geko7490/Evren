@@ -106,7 +106,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 val args = runCatching { JSONObject(function.optString("arguments")) }
                     .getOrElse { JSONObject() }
                 onProgress(toolStatus(name))
-                val output = execute(name, args, targets, changes, logs)
+                val output = execute(name, args, targets, changes, logs, fullAccess)
                 if (name == "submit_plan") plan = args.optJSONArray("steps").asStringList()
                 messages.put(JSONObject().put("role", "tool")
                     .put("tool_call_id", call.optString("id")).put("content", output))
