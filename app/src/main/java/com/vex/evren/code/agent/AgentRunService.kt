@@ -61,7 +61,7 @@ class AgentRunService : Service() {
             try {
                 val vault = CredentialVault(this@AgentRunService)
                 val evren = EvrenApiClient({ vault.read("evren_api_key") }, { vault.read("evren_base_url") ?: EvrenApiClient.DEFAULT_BASE_URL })
-                val github = GitHubApiClient { vault.read("github_pat") }
+                val github = GitHubApiClient(token = { vault.read("github_pat") })
                 val targets = parseTargets(task.targetsJson)
                 var attempt = 0
                 var result: AgentRunResult? = null
