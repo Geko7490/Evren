@@ -79,8 +79,9 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         val stepLimit = if (fullAccess) maxOf(maxSteps, 200) else maxSteps.coerceIn(1, 40)
         for (step in 0 until stepLimit) {
             compactContextIfNeeded(messages, contextLength, onProgress)
-            onProgress("EVREN analiz ediyor · ${step + 1}/$stepLimit")
-            val assistant = evren.chatWithTools(model, tools(fullAccess), messages, if (fullAccess) null else maxTokens)
+            val effectiveOutputBudget = calculateOutputBudget(messages, contextLength, maxTokens)
+            onProgress("EVREN analiz ediyor · ${step + 1}/$stepLimit · çıktı bütçesi $effectiveOutputBudget")
+            val assistant = evren.chatWithTools(model, tools(fullAccess), messages, effectiveOutputBudget)
             val calls = assistant.optJSONArray("tool_calls") ?: JSONArray()
             if (calls.length() == 0) {
                 val content = assistant.optString("content")
@@ -210,8 +211,9 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         val currentChars = (0 until messages.length()).sumOf { messages.optJSONObject(it)?.toString()?.length ?: 0 }
         if (currentChars <= targetChars || messages.length() <= MIN_MESSAGES_TO_KEEP) return
 
-        val keepTail = minOf(RECENT_MESSAGES_TO_KEEP, messages.length() - 2)
-        val removed = (2 until messages.length() - keepTail).mapNotNull { messages.optJSONObject(it) }
+        var tailStart = maxOf(2, messages.length() - RECENT_MESSAGES_TO_KEEP)
+        while (tailStart > 2 && messages.optJSONObject(tailStart)?.optString("role") == "tool") tailStart--
+        val removed = (2 until tailStart).mapNotNull { messages.optJSONObject(it) }
         if (removed.isEmpty()) return
         val notes = removed.mapNotNull { item ->
             val role = item.optString("role")
@@ -228,12 +230,21 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         rebuilt.put(messages.optJSONObject(0))
         rebuilt.put(messages.optJSONObject(1))
         rebuilt.put(JSONObject().put("role", "user").put("content", compactNote))
-        for (index in messages.length() - keepTail until messages.length()) {
+        for (index in tailStart until messages.length()) {
             messages.optJSONObject(index)?.let { rebuilt.put(it) }
         }
         for (index in messages.length() - 1 downTo 0) messages.remove(index)
         for (index in 0 until rebuilt.length()) messages.put(rebuilt.get(index))
         onProgress("Context otomatik sıkıştırıldı · yaklaşık ${currentChars / 4} token → ${messages.length()} mesaj")
+    }
+
+    private fun calculateOutputBudget(messages: JSONArray, contextLength: Int?, requestedMax: Int): Int {
+        val window = (contextLength ?: DEFAULT_CONTEXT_TOKENS).coerceAtLeast(8_192)
+        val promptChars = (0 until messages.length()).sumOf { messages.optJSONObject(it)?.toString()?.length ?: 0 }
+        val estimatedPromptTokens = (promptChars / 4).coerceAtLeast(1)
+        val safetyReserve = maxOf(512, window / 20)
+        val available = (window - estimatedPromptTokens - safetyReserve).coerceAtLeast(1_024)
+        return minOf(requestedMax.coerceAtLeast(1), available)
     }
 
     private fun resolveTarget(args: JSONObject, targets: List<AgentTarget>): AgentTarget {
@@ -285,7 +296,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         private const val MAX_INDEXED_PATHS = 5_000
         private const val MAX_FILE_CHARS = 60_000
         private const val MAX_COMPACTION_NOTE_CHARS = 18_000
-        private const val MIN_MESSAGES_TO_KEEP = 22
+        private const val MIN_MESSAGES_TO_KEEP = 8
         private const val RECENT_MESSAGES_TO_KEEP = 16
 
         private val SYSTEM_PROMPT = """
