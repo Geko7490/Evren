@@ -204,6 +204,22 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
             }
         }
 
+        errorMessage?.let { message ->
+            Surface(
+                color = Color(0xFF3A2028),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(message, color = Color(0xFFFCA5A5), fontSize = 11.sp, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { errorMessage = null }) { Text("Kapat", color = VexText) }
+                }
+            }
+        }
+
         when (tab) {
             WorkspaceTab.CONNECT -> ConnectionPanel(
                 evrenKey, { evrenKey = it }, githubToken, { githubToken = it },
@@ -343,57 +359,74 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                 busy = busy,
                 onRun = { planningContext ->
                     val repo = selectedRepository
-                    if (!termsAccepted) errorMessage = "EVREN şartlarını kabul etmeden Agent çalıştırılamaz."
-                    else if (repo == null) errorMessage = "Önce bir repo seçin."
-                    else if (selectedModel.isBlank()) errorMessage = "EVREN'e bağlanıp model seçin."
-                    else if (workingBranch == repo.defaultBranch) errorMessage = "Önce Files sekmesinden ana repo için çalışma dalı oluşturun."
-                    else scope.launch {
-                        busy = true
-                        agentStatus = "Agent hazırlanıyor · model kontrol ediliyor"
-                        errorMessage = null
-                        agentResult = null
-                        proposals.clear()
-                        try {
-                            val details = modelDetails ?: if (selectedModel == "auto") null else evren.getModelDetails(selectedModel)
-                            agentStatus = "Repo erişimi ve çalışma dalları kontrol ediliyor"
-                            if (details?.tools == false) {
-                                throw IllegalStateException("Seçilen EVREN modeli Tool Calling desteklemiyor.")
-                            }
-                            val tokenBudget = if (agentMaxPower) {
-                                details?.defaultMaxOutputTokens?.coerceAtLeast(1) ?: 4096
-                            } else {
-                                details?.recommendedAgentBudget() ?: 4096
-                            }
-                            val targets = mutableListOf(AgentTarget(repo, workingBranch))
-                            selectedSecondaryRepository?.let { secondRepo ->
-                                if (secondaryWorkingBranch.isBlank() || secondaryBranchRepository != secondRepo.fullName) {
-                                    val newBranch = "vex-agent-${System.currentTimeMillis()}-secondary"
-                                    github.createBranch(secondRepo.fullName, newBranch, secondRepo.defaultBranch)
-                                    secondaryWorkingBranch = newBranch
-                                    secondaryBranchRepository = secondRepo.fullName
+                    when {
+                        !termsAccepted -> errorMessage = "EVREN şartlarını kabul etmeden Agent çalıştırılamaz."
+                        repo == null -> errorMessage = "Önce bir repo seçin."
+                        selectedModel.isBlank() -> errorMessage = "EVREN'e bağlanıp model seçin."
+                        taskInput.isBlank() -> errorMessage = "Önce yapılacak görevi yazın."
+                        else -> scope.launch {
+                            busy = true
+                            errorMessage = null
+                            agentResult = null
+                            proposals.clear()
+                            try {
+                                var activeBranch = workingBranch
+                                if (activeBranch.isBlank() || activeBranch == repo.defaultBranch) {
+                                    agentStatus = "Güvenli çalışma dalı oluşturuluyor"
+                                    val newBranch = "vex-agent-${System.currentTimeMillis()}"
+                                    github.createBranch(repo.fullName, newBranch, repo.defaultBranch)
+                                    activeBranch = newBranch
+                                    workingBranch = newBranch
+                                    selectedBranch = newBranch
+                                    tree.clear()
+                                    tree.addAll(github.getTree(repo.fullName, newBranch))
                                 }
-                                targets += AgentTarget(secondRepo, secondaryWorkingBranch)
-                            }
-                            val fullRequest = buildString {
-                                append(taskInput)
-                                if (planningContext.isNotBlank()) {
-                                    appendLine()
-                                    appendLine()
-                                    appendLine("Planning conversation and agreed decisions:")
-                                    append(planningContext)
+
+                                agentStatus = "Model yetenekleri kontrol ediliyor"
+                                val details = modelDetails ?: if (selectedModel == "auto") null else evren.getModelDetails(selectedModel)
+                                agentStatus = "Repo erişimi ve çalışma dalları kontrol ediliyor"
+                                if (details?.tools == false) {
+                                    throw IllegalStateException("Seçilen EVREN modeli Tool Calling desteklemiyor.")
                                 }
+                                val tokenBudget = if (agentMaxPower) {
+                                    details?.defaultMaxOutputTokens?.coerceAtLeast(1) ?: 4096
+                                } else {
+                                    details?.recommendedAgentBudget() ?: 4096
+                                }
+                                val targets = mutableListOf(AgentTarget(repo, activeBranch))
+                                selectedSecondaryRepository?.let { secondRepo ->
+                                    if (secondaryWorkingBranch.isBlank() || secondaryBranchRepository != secondRepo.fullName) {
+                                        agentStatus = "İkinci repo için güvenli çalışma dalı oluşturuluyor"
+                                        val newBranch = "vex-agent-${System.currentTimeMillis()}-secondary"
+                                        github.createBranch(secondRepo.fullName, newBranch, secondRepo.defaultBranch)
+                                        secondaryWorkingBranch = newBranch
+                                        secondaryBranchRepository = secondRepo.fullName
+                                    }
+                                    targets += AgentTarget(secondRepo, secondaryWorkingBranch)
+                                }
+                                val fullRequest = buildString {
+                                    append(taskInput.trim())
+                                    if (planningContext.isNotBlank()) {
+                                        appendLine()
+                                        appendLine()
+                                        appendLine("Planning conversation and agreed decisions:")
+                                        append(planningContext)
+                                    }
+                                }
+                                val result = AgentEngine(evren, github).run(
+                                    selectedModel, fullRequest, targets, tokenBudget,
+                                    if (agentAutopilot) 30 else 12
+                                ) { agentStatus = it }
+                                agentResult = result
+                                proposals.addAll(result.changes)
+                                agentStatus = "Tamamlandı · ${result.changes.size} değişiklik önerisi"
+                            } catch (e: Exception) {
+                                agentStatus = e.message ?: "Agent başarısız."
+                                errorMessage = agentStatus
+                            } finally {
+                                busy = false
                             }
-                            val result = AgentEngine(evren, github).run(
-                                selectedModel, fullRequest, targets, tokenBudget,
-                                if (agentAutopilot) 30 else 12
-                            ) { agentStatus = it }
-                            agentResult = result
-                            proposals.addAll(result.changes)
-                            agentStatus = "Tamamlandı · ${result.changes.size} değişiklik önerisi"
-                        } catch (e: Exception) {
-                            agentStatus = e.message ?: "Agent başarısız."
-                            errorMessage = agentStatus
-                        } finally { busy = false }
+                        }
                     }
                 },
                 onViewChanges = { tab = WorkspaceTab.CHANGES }
@@ -480,11 +513,6 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                     }) { Text("Şimdi değil") }
                 }
             )
-        }
-        errorMessage?.let { message ->
-            TextButton(onClick = { errorMessage = null }, modifier = Modifier.fillMaxWidth()) {
-                Text("Error: $message  ·  Dismiss", color = Color(0xFFFCA5A5), fontSize = 11.sp)
-            }
         }
     }
 }
@@ -617,6 +645,32 @@ private fun AgentPanel(
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Autonomous coding agent", color = VexText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Text("${repository?.fullName ?: "No repository"} · $branch · ${model.ifBlank { "No model" }}", color = VexMuted, fontSize = 11.sp)
+        if (repository != null && branch == repository.defaultBranch) {
+            Text("Çalışma dalı henüz yok. Run Agent ilk çalıştırmada güvenli bir dalı otomatik oluşturur.",
+                color = VexMuted, fontSize = 10.sp)
+        }
+        if (busy) {
+            Surface(
+                color = VexSurface,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.width(20.dp).height(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text("Agent çalışıyor", color = VexText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text(status, color = VexPurple, fontSize = 11.sp)
+                    }
+                }
+            }
+        }
         if (model == "auto") {
             Text("Auto routing · Model output ceiling is provider-managed; 4096-token Agent request.", color = VexMuted, fontSize = 11.sp)
         } else if (modelDetails != null) {
