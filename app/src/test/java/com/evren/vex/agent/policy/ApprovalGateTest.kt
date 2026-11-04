@@ -18,13 +18,15 @@ class ApprovalGateTest {
         ApprovalGate(InMemoryPushModeStore(mode), queue)
 
     @Test
-    fun fullAccessApprovesImmediatelyAndSkipsQueue() {
+    fun fullAccessApprovesImmediatelyAndRecordsAuditEntry() {
         val queue = ApprovalQueue()
         val result = gate(PushMode.FULL_ACCESS, queue).authorize(ActionRequest(action = pushAction))
 
         assertTrue(result is AuthorizationResult.Approved)
-        assertEquals(ActionStatus.APPROVED, (result as AuthorizationResult.Approved).request.status)
-        assertTrue(queue.pending().isEmpty())
+        val approved = (result as AuthorizationResult.Approved).request
+        assertEquals(ActionStatus.APPROVED, approved.status)
+        assertEquals(1, queue.requests.value.size)
+        assertEquals(approved.id, queue.requests.value.single().id)
     }
 
     @Test
@@ -47,7 +49,6 @@ class ApprovalGateTest {
             ).request
 
         val approved = queue.approve(pending.id)
-
         assertEquals(ActionStatus.APPROVED, approved?.status)
         assertTrue(queue.pending().isEmpty())
     }
@@ -61,7 +62,6 @@ class ApprovalGateTest {
             ).request
 
         val rejected = queue.reject(pending.id)
-
         assertEquals(ActionStatus.REJECTED, rejected?.status)
         assertTrue(queue.pending().isEmpty())
     }
@@ -75,14 +75,15 @@ class ApprovalGateTest {
             ).request
 
         queue.approve(pending.id)
-
         assertNull(queue.approve(pending.id))
     }
 
     @Test
-    fun unknownModeFallsBackToSafeDefault() {
-        assertEquals(PushMode.APPROVAL_REQUIRED, PushMode.fromStorage("something-else"))
-        assertEquals(PushMode.APPROVAL_REQUIRED, PushMode.fromStorage(null))
+    fun missingOrUnknownPreferenceDefaultsToFullAccess() {
+        assertEquals(PushMode.FULL_ACCESS, PushMode.DEFAULT)
+        assertEquals(PushMode.FULL_ACCESS, PushMode.fromStorage("something-else"))
+        assertEquals(PushMode.FULL_ACCESS, PushMode.fromStorage(null))
         assertEquals(PushMode.FULL_ACCESS, PushMode.fromStorage("full_access"))
+        assertEquals(PushMode.APPROVAL_REQUIRED, PushMode.fromStorage("approval_required"))
     }
 }
