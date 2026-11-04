@@ -105,6 +105,16 @@ class GitHubApiClient(
                 ?: throw IOException("GitHub did not return a commit SHA.")
         }
 
+    suspend fun deleteFile(fullName: String, path: String, branch: String, existingSha: String): String =
+        withContext(Dispatchers.IO) {
+            val (owner, repo) = splitRepo(fullName)
+            val payload = JSONObject().put("message", "agent: delete $path")
+                .put("sha", existingSha).put("branch", branch)
+            val result = requestJson("DELETE", "/repos/$owner/$repo/contents/${encodePath(path)}", payload)
+            result.optJSONObject("commit")?.optString("sha")?.takeIf { it.isNotBlank() }
+                ?: throw IOException("GitHub did not return a deletion commit SHA.")
+        }
+
     private fun requestJson(method: String, path: String, payload: JSONObject? = null): JSONObject {
         val raw = requestRaw(method, path, payload)
         return try { JSONObject(raw) } catch (e: Exception) { throw IOException("Invalid GitHub JSON response.", e) }
