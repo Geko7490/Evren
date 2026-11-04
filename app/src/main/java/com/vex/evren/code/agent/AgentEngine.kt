@@ -231,7 +231,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         for (index in messages.length() - keepTail until messages.length()) {
             messages.optJSONObject(index)?.let { rebuilt.put(it) }
         }
-        messages.clear()
+        for (index in messages.length() - 1 downTo 0) messages.remove(index)
         for (index in 0 until rebuilt.length()) messages.put(rebuilt.get(index))
         onProgress("Context otomatik sıkıştırıldı · yaklaşık ${currentChars / 4} token → ${messages.length()} mesaj")
     }
