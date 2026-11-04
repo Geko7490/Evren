@@ -69,14 +69,15 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 appendLine("You may inspect and coordinate changes across both repositories. Always specify the exact repository in every repository tool call.")
             }))
 
-        repeat(maxSteps.coerceIn(1, 40)) { step ->
-            onProgress("EVREN analiz ediyor · ${step + 1}/${maxSteps.coerceIn(1, 40)}")
+        val stepLimit = maxSteps.coerceIn(1, 40)
+        for (step in 0 until stepLimit) {
+            onProgress("EVREN analiz ediyor · ${step + 1}/$stepLimit")
             val assistant = evren.chatWithTools(model, tools(), messages, maxTokens)
             val calls = assistant.optJSONArray("tool_calls") ?: JSONArray()
             if (calls.length() == 0) {
                 val content = assistant.optString("content")
                 val protocol = runCatching {
-                    JSONObject(content.trim().removePrefix("```json").removeSuffix("```").trim())
+                    JSONObject(content.trim().removePrefix("\u0060\u0060\u0060json").removeSuffix("\u0060\u0060\u0060").trim())
                 }.getOrNull()
                 if (protocol?.has("tool") == true) {
                     val name = protocol.optString("tool")
@@ -84,9 +85,12 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                     onProgress(toolStatus(name))
                     val output = execute(name, args, targets, changes, logs)
                     if (name == "submit_plan") plan = args.optJSONArray("steps").asStringList()
+                    if (name == "finish_task") {
+                        return AgentRunResult(output, plan, logs, changes.values.toList())
+                    }
                     messages.put(JSONObject().put("role", "assistant").put("content", content))
                     messages.put(JSONObject().put("role", "user").put("content", "Tool result:\n$output\nContinue."))
-                    return@repeat
+                    continue
                 }
                 val answer = protocol?.optString("final")?.takeIf { it.isNotBlank() }
                     ?: content.ifBlank { "Model boş yanıt döndürdü." }
@@ -105,6 +109,9 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 if (name == "submit_plan") plan = args.optJSONArray("steps").asStringList()
                 messages.put(JSONObject().put("role", "tool")
                     .put("tool_call_id", call.optString("id")).put("content", output))
+                if (name == "finish_task") {
+                    return AgentRunResult(output, plan, logs, changes.values.toList())
+                }
             }
         }
         return AgentRunResult(
