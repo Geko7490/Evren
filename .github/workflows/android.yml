@@ -1,0 +1,66 @@
+name: Android CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: android-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The Gradle project is still being added. Detect the wrapper so this
+      # workflow stays green on the current README-only state instead of
+      # failing on a missing ./gradlew.
+      - name: Detect Gradle wrapper
+        id: gradle
+        run: |
+          if [ -x ./gradlew ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up JDK 17
+        if: steps.gradle.outputs.present == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        if: steps.gradle.outputs.present == 'true'
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Unit tests
+        if: steps.gradle.outputs.present == 'true'
+        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Assemble debug APK
+        if: steps.gradle.outputs.present == 'true'
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Upload debug APK
+        if: steps.gradle.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evren-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+
+      - name: No Gradle project yet
+        if: steps.gradle.outputs.present != 'true'
+        run: echo "No Gradle wrapper found — skipping Android build. This is expected until the Gradle project lands."
