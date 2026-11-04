@@ -87,7 +87,9 @@ class AgentRunService : Service() {
                 result?.let { dao.finish(task.id, STATUS_COMPLETED, "Görev tamamlandı", it.answer, null, checkpoint) }
             } catch (e: CancellationException) {
                 val status = if (cancelRequested) STATUS_CANCELLED else STATUS_PAUSED
-                dao.finish(task.id, status, if (cancelRequested) "İptal edildi" else "Duraklatıldı · checkpoint saklandı", null, null, checkpoint)
+                withContext(NonCancellable + Dispatchers.IO) {
+                    dao.finish(task.id, status, if (cancelRequested) "İptal edildi" else "Duraklatıldı · checkpoint saklandı", null, null, checkpoint)
+                }
                 throw e
             } catch (e: Exception) {
                 dao.finish(task.id, STATUS_FAILED, "Görev başarısız", null, e.message, checkpoint)
