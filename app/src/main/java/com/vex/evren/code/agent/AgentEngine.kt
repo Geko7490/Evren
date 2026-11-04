@@ -28,7 +28,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         model: String, request: String, repository: GitHubRepository, branch: String,
         maxTokens: Int = 4096, onProgress: (String) -> Unit
     ): AgentRunResult = run(
-        model, request, listOf(AgentTarget(repository, branch)), maxTokens, 12, onProgress
+        model, request, listOf(AgentTarget(repository, branch)), maxTokens, 12, false, onProgress
     )
 
     suspend fun run(
