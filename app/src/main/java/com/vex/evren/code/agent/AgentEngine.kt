@@ -2,6 +2,7 @@ package com.vex.evren.code.agent
 
 import com.vex.evren.code.data.EvrenApiClient
 import com.vex.evren.code.data.GitHubApiClient
+import com.vex.evren.code.data.GitHubActionsClient
 import com.vex.evren.code.data.GitHubRepository
 import org.json.JSONArray
 import org.json.JSONObject
@@ -23,7 +24,7 @@ data class AgentRunResult(
     val changes: List<ProposedChange>
 )
 
-class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubApiClient) {
+class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubApiClient, private val actions: GitHubActionsClient? = null) {
     suspend fun run(
         model: String, request: String, repository: GitHubRepository, branch: String,
         maxTokens: Int = 4096, onProgress: (String) -> Unit
@@ -219,6 +220,48 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                     "Öneri hazırlandı: ${target.repository.fullName}/$path. GitHub'a yazılmadı; kullanıcı incelemesi gerekiyor."
                 }
             }
+            "list_workflows" -> {
+                val target = resolveTarget(args, targets)
+                val client = actions ?: throw IllegalStateException("GitHub Actions client is unavailable.")
+                client.listWorkflows(target.repository.fullName).joinToString("\n") { item ->
+                    item.optString("name") + " · " + item.optString("state") + " · " + item.optString("path") + " · id=" + item.optLong("id")
+                }.ifBlank { "Bu depoda workflow bulunamadı." }
+            }
+            "dispatch_build" -> {
+                require(fullAccess) { "Build başlatmak için Full Access Mode açılmalıdır." }
+                val target = resolveTarget(args, targets)
+                val client = actions ?: throw IllegalStateException("GitHub Actions client is unavailable.")
+                val workflow = args.getString("workflow")
+                client.dispatch(target.repository.fullName, workflow, target.branch)
+                logs += "GitHub Actions build başlatıldı · " + target.repository.fullName + " · " + workflow
+                "Build dispatch isteği gönderildi. list_builds ile sonucu takip et."
+            }
+            "list_builds" -> {
+                val target = resolveTarget(args, targets)
+                val client = actions ?: throw IllegalStateException("GitHub Actions client is unavailable.")
+                client.listRuns(target.repository.fullName, target.branch, args.optInt("limit", 10)).joinToString("\n") { run ->
+                    "Run #" + run.runNumber + " · " + run.name + " · " + run.status + "/" + (run.conclusion ?: "pending") + " · id=" + run.id + " · " + run.htmlUrl
+                }.ifBlank { "Bu branch için build bulunamadı." }
+            }
+            "inspect_build" -> {
+                val target = resolveTarget(args, targets)
+                val client = actions ?: throw IllegalStateException("GitHub Actions client is unavailable.")
+                val runId = args.getLong("run_id")
+                val jobs = client.jobs(target.repository.fullName, runId)
+                buildString {
+                    jobs.forEach { job ->
+                        appendLine("JOB " + job.optString("name") + " · " + job.optString("status") + "/" + job.optString("conclusion"))
+                        val steps = job.optJSONArray("steps") ?: JSONArray()
+                        for (i in 0 until steps.length()) {
+                            val step = steps.optJSONObject(i) ?: continue
+                            appendLine("  " + step.optString("name") + " · " + step.optString("conclusion"))
+                        }
+                        if (job.optString("conclusion") == "failure") appendLine(client.jobLogs(target.repository.fullName, job.optLong("id")).take(24000))
+                    }
+                    appendLine("ARTIFACTS:")
+                    client.artifacts(target.repository.fullName, runId).forEach { a -> appendLine(a.name + " · id=" + a.id + " · " + a.sizeBytes + " bytes · expired=" + a.expired) }
+                }
+            }
             "delete_file" -> {
                 require(fullAccess) { "Dosya silmek için Full Access Mode açılmalıdır." }
                 val target = resolveTarget(args, targets)
@@ -344,6 +387,10 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         put(functionTool("read_file", "Read a text file from one connected repository.", """{"type":"object","properties":{$repoProperty"path":{"type":"string"}},"required":["repository","path"]}"""))
         put(functionTool("propose_file_change", if (fullAccess) "Create or replace a file directly on the selected working branch and commit it." else "Prepare a complete file replacement in one connected repository. No remote write.", """{"type":"object","properties":{$repoProperty"path":{"type":"string"},"content":{"type":"string"}},"required":["repository","path","content"]}"""))
         if (fullAccess) put(functionTool("delete_file", "Delete a file from the selected working branch when required by the task.", """{"type":"object","properties":{$repoProperty"path":{"type":"string"}},"required":["repository","path"]}"""))
+        put(functionTool("list_workflows", "List GitHub Actions workflows for a connected repository.", """{"type":"object","properties":{$repoProperty},"required":["repository"]}"""))
+        put(functionTool("list_builds", "List recent GitHub Actions runs for the selected branch.", """{"type":"object","properties":{$repoProperty"limit":{"type":"integer","minimum":1,"maximum":30}},"required":["repository"]}"""))
+        put(functionTool("inspect_build", "Inspect a GitHub Actions run, jobs, failed step logs and artifacts.", """{"type":"object","properties":{$repoProperty"run_id":{"type":"integer"}},"required":["repository","run_id"]}"""))
+        if (fullAccess) put(functionTool("dispatch_build", "Trigger a GitHub Actions workflow_dispatch build on the selected branch.", """{"type":"object","properties":{$repoProperty"workflow":{"type":"string"}},"required":["repository","workflow"]}"""))
         put(functionTool("finish_task", "Finish and summarize the task.", """{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"]}"""))
     }
 
@@ -368,7 +415,7 @@ Choose the investigation order and implementation roadmap yourself. Start by sub
 Inspect relevant files before proposing changes. Every repository tool call must include the exact owner/repo in its repository argument.
 Coordinate interfaces and compatibility across repositories. Do not assume the two repositories share a build system.
 When Full Access Mode is disabled, prepare complete file-change proposals. When enabled, write changes directly using the available repository tools.
-Never claim tests or builds ran; no execution environment is available in this agent toolset.
+Use GitHub Actions for Android builds; never require local Gradle or Android SDK. Use list_workflows, dispatch_build, list_builds and inspect_build for remote CI. A dispatch request is not proof of build success: poll until a terminal conclusion. Analyze failed step logs before proposing bounded fixes. Never claim a build succeeded without a completed success conclusion.
 When Full Access Mode is disabled, never write directly to GitHub; changes remain proposals until reviewed and approved. In Full Access Mode, commit directly to the selected working branches, never to the default branch.
 Send short, meaningful progress updates through tool status messages.
 Finish with a concise summary, limitations, and files proposed.
