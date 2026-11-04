@@ -53,15 +53,16 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         val changes = linkedMapOf<String, ProposedChange>()
         val logs = mutableListOf<String>()
         var plan = emptyList<String>()
+        val indexLimit = contextLength?.let { (it / 80).coerceIn(200, MAX_INDEXED_PATHS) } ?: 400
         val targetText = targets.joinToString("\n\n") { target ->
             buildString {
                 appendLine("REPOSITORY: ${target.repository.fullName}")
                 appendLine("BRANCH: ${target.branch}")
                 appendLine("FILES:")
                 val paths = indexes[target.repository.fullName].orEmpty()
-                paths.take(MAX_INDEXED_PATHS).forEach { appendLine("- $it") }
-                if (paths.size > MAX_INDEXED_PATHS) {
-                    appendLine("... ${paths.size - MAX_INDEXED_PATHS} additional paths omitted from the prompt index; use list_files to inspect the complete repository.")
+                paths.take(indexLimit).forEach { appendLine("- $it") }
+                if (paths.size > indexLimit) {
+                    appendLine("... ${paths.size - indexLimit} additional paths omitted from the prompt index; use list_files to inspect the complete repository.")
                 }
             }
         }
@@ -146,7 +147,10 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                     .filter { prefix.isBlank() || it.path.startsWith("$prefix/") }
                     .joinToString("\n") { "${it.type}: ${it.path}" }
                 logs += "Dosyalar tarandı · ${target.repository.fullName.substringAfter('/')}"
-                entries.ifBlank { "Eşleşen dosya yok." }
+                if (entries.isBlank()) "Eşleşen dosya yok."
+                else if (entries.length > MAX_LISTING_CHARS) entries.take(MAX_LISTING_CHARS) +
+                    "\n\n[Listing shortened for context safety. Narrow the path filter to inspect more.]"
+                else entries
             }
             "read_file" -> {
                 val target = resolveTarget(args, targets)
@@ -295,6 +299,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         private const val CONTEXT_USAGE_RATIO = 0.72
         private const val MAX_INDEXED_PATHS = 5_000
         private const val MAX_FILE_CHARS = 60_000
+        private const val MAX_LISTING_CHARS = 80_000
         private const val MAX_COMPACTION_NOTE_CHARS = 18_000
         private const val MIN_MESSAGES_TO_KEEP = 8
         private const val RECENT_MESSAGES_TO_KEEP = 16
