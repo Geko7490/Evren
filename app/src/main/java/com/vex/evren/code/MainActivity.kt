@@ -1,6 +1,7 @@
 package com.vex.evren.code
 
 import android.os.Bundle
+import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -46,7 +47,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import com.vex.evren.code.agent.AgentEngine
+import com.vex.evren.code.agent.AgentRunService
 import com.vex.evren.code.agent.AgentTarget
 import com.vex.evren.code.agent.AgentRunResult
 import com.vex.evren.code.agent.ProposedChange
@@ -58,6 +61,9 @@ import com.vex.evren.code.data.GitHubFile
 import com.vex.evren.code.data.GitHubRepository
 import com.vex.evren.code.data.GitHubTreeEntry
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.UUID
 
 private val VexPurple = Color(0xFFA855F7)
 private val VexBackground = Color(0xFF0F0F13)
@@ -94,6 +100,7 @@ private enum class WorkspaceTab(val label: String) {
 @Composable
 private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: GitHubApiClient) {
     val scope = rememberCoroutineScope()
+    val appContext = LocalContext.current
     var tab by remember { mutableStateOf(WorkspaceTab.CONNECT) }
     var evrenKey by remember { mutableStateOf("") }
     var githubToken by remember { mutableStateOf("") }
@@ -191,6 +198,10 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                     }
                 }
             }
+        }
+
+        TextButton(onClick = { appContext.startActivity(Intent(appContext, TaskManagerActivity::class.java)) }) {
+            Text("Agent Tasks", color = VexPurple)
         }
 
         Row(
@@ -416,16 +427,32 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                                         append(planningContext)
                                     }
                                 }
-                                val result = AgentEngine(evren, github).run(
-                                    selectedModel, fullRequest, targets, tokenBudget,
-                                    if (agentAutopilot) 30 else 12,
-                                    fullAccess = agentFullAccess,
-                                    contextLength = details?.contextLength
-                                ) { agentStatus = it }
-                                agentResult = result
-                                proposals.addAll(result.changes)
-                                agentStatus = if (agentFullAccess) "Tamamlandı · ${result.toolLog.count { it.contains("GitHub'a yazıldı") || it.contains("Dosya silindi") }} doğrudan GitHub işlemi" else "Tamamlandı · ${result.changes.size} değişiklik önerisi"
-                            } catch (e: Exception) {
+                                val targetsJson = JSONArray().apply {
+                                    targets.forEach { target ->
+                                        put(JSONObject().put("id", target.repository.id)
+                                            .put("fullName", target.repository.fullName)
+                                            .put("description", target.repository.description ?: "")
+                                            .put("defaultBranch", target.repository.defaultBranch)
+                                            .put("isPrivate", target.repository.isPrivate)
+                                            .put("htmlUrl", target.repository.htmlUrl)
+                                            .put("language", target.repository.language ?: "")
+                                            .put("branch", target.branch))
+                                    }
+                                }
+                                val taskId = UUID.randomUUID().toString()
+                                val serviceIntent = Intent(appContext, AgentRunService::class.java).apply {
+                                    action = AgentRunService.ACTION_START
+                                    putExtra(AgentRunService.EXTRA_ID, taskId)
+                                    putExtra(AgentRunService.EXTRA_MODEL, selectedModel)
+                                    putExtra(AgentRunService.EXTRA_REQUEST, fullRequest)
+                                    putExtra(AgentRunService.EXTRA_TARGETS, targetsJson.toString())
+                                    putExtra(AgentRunService.EXTRA_MAX_TOKENS, tokenBudget)
+                                    putExtra(AgentRunService.EXTRA_MAX_STEPS, if (agentAutopilot) 30 else 12)
+                                    putExtra(AgentRunService.EXTRA_FULL_ACCESS, agentFullAccess)
+                                    putExtra(AgentRunService.EXTRA_CONTEXT_LENGTH, details?.contextLength ?: -1)
+                                }
+                                appContext.startForegroundService(serviceIntent)
+                                agentStatus = "Arka plan görevi başlatıldı · $taskId"
                                 agentStatus = e.message ?: "Agent başarısız."
                                 errorMessage = agentStatus
                             } finally {
