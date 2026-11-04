@@ -8,7 +8,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
@@ -77,6 +79,47 @@ class GitHubActionsClient(
         } }
     }
 
+    suspend fun downloadArtifact(repository: String, artifactId: Long, destination: File): Pair<Long, String> = io {
+        val (owner, repo) = splitRepo(repository)
+        val accessToken = token()?.takeIf { it.isNotBlank() } ?: throw IllegalStateException("GitHub token is missing.")
+        destination.parentFile?.mkdirs()
+        val request = Request.Builder()
+            .url("https://api.github.com/repos/$owner/$repo/actions/artifacts/$artifactId/zip")
+            .header("Authorization", "Bearer $accessToken")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .get().build()
+        val digest = MessageDigest.getInstance("SHA-256")
+        var total = 0L
+        val temporary = File(destination.parentFile, destination.name + ".part")
+        try {
+            http.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw IOException("Artifact download HTTP ${response.code}: ${response.message}")
+                val body = response.body ?: throw IOException("GitHub returned an empty artifact.")
+                val declared = body.contentLength()
+                if (declared > MAX_ARTIFACT_BYTES) throw IOException("Artifact exceeds the 250 MB download limit.")
+                body.byteStream().use { input ->
+                    temporary.outputStream().buffered().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            if (total > MAX_ARTIFACT_BYTES) throw IOException("Artifact exceeds the 250 MB download limit.")
+                            digest.update(buffer, 0, count)
+                            output.write(buffer, 0, count)
+                        }
+                    }
+                }
+            }
+            if (!temporary.renameTo(destination)) throw IOException("Downloaded artifact could not be finalized.")
+            total to digest.digest().joinToString("") { "%02x".format(it) }
+        } catch (error: Exception) {
+            temporary.delete()
+            throw error
+        }
+    }
+
     private suspend fun <T> io(block: () -> T): T = withContext(Dispatchers.IO) { block() }
     private fun json(method: String, path: String, payload: JSONObject? = null) =
         try { JSONObject(request(method, path, payload)) } catch (e: Exception) { throw IOException("GitHub returned invalid JSON.", e) }
@@ -105,5 +148,5 @@ class GitHubActionsClient(
         return parts[0] to parts[1]
     }
     private fun enc(value: String) = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
-    companion object { private val JSON = "application/json; charset=utf-8".toMediaType() }
+    companion object { private const val MAX_ARTIFACT_BYTES = 250L * 1024L * 1024L; private val JSON = "application/json; charset=utf-8".toMediaType() }
 }
