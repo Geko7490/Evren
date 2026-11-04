@@ -419,7 +419,8 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                                 val result = AgentEngine(evren, github).run(
                                     selectedModel, fullRequest, targets, tokenBudget,
                                     if (agentAutopilot) 30 else 12,
-                                    fullAccess = agentFullAccess
+                                    fullAccess = agentFullAccess,
+                                    contextLength = details?.contextLength
                                 ) { agentStatus = it }
                                 agentResult = result
                                 proposals.addAll(result.changes)
