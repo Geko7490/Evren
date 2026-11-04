@@ -8,37 +8,24 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * How much authority the agent has over remote GitHub operations.
  *
- * The mode is a single global switch so the user always knows which contract is
- * active. It is intentionally coarse: there is no per-action override, because a
- * half-open policy is harder to reason about than a clear "all" or "ask me".
+ * FULL_ACCESS is the default: the agent can execute supported GitHub actions
+ * without a per-action approval prompt. APPROVAL_REQUIRED remains an explicit
+ * opt-in restriction that users can enable at any time.
  */
 enum class PushMode {
-
-    /**
-     * "Allow everything" mode.
-     *
-     * The agent may push commits, create repositories, open pull requests and
-     * perform any other remote action on its own, without asking the user.
-     * Remote changes made in this mode are irreversible, so the UI must show a
-     * persistent warning while it is active.
-     */
+    /** Execute supported GitHub actions immediately and record them in history. */
     FULL_ACCESS,
 
-    /**
-     * Safe mode (default).
-     *
-     * Every remote action is turned into an [ActionRequest] and parked in the
-     * [ApprovalQueue]. Nothing leaves the device until the user approves it.
-     */
+    /** Park remote actions until the user explicitly approves them. */
     APPROVAL_REQUIRED;
 
     val isFullAccess: Boolean get() = this == FULL_ACCESS
 
     companion object {
-        /** Safe by default: a fresh install never grants full access. */
-        val DEFAULT: PushMode = APPROVAL_REQUIRED
+        /** EVREN is autonomous by default; users may opt into approval mode. */
+        val DEFAULT: PushMode = FULL_ACCESS
 
-        /** Tolerant parsing so a corrupted/renamed preference never grants access. */
+        /** Unknown or missing preferences retain the autonomy-first default. */
         fun fromStorage(raw: String?): PushMode =
             values().firstOrNull { it.name.equals(raw, ignoreCase = true) } ?: DEFAULT
     }
@@ -47,13 +34,11 @@ enum class PushMode {
 /** Observable holder for the currently selected [PushMode]. */
 interface PushModeStore {
     val mode: StateFlow<PushMode>
-
     fun setMode(mode: PushMode)
 }
 
 /** Non-persistent store, useful for tests and previews. */
 class InMemoryPushModeStore(initial: PushMode = PushMode.DEFAULT) : PushModeStore {
-
     private val _mode = MutableStateFlow(initial)
     override val mode: StateFlow<PushMode> = _mode.asStateFlow()
 
@@ -62,14 +47,8 @@ class InMemoryPushModeStore(initial: PushMode = PushMode.DEFAULT) : PushModeStor
     }
 }
 
-/**
- * Persists the mode in [android.content.SharedPreferences].
- *
- * The mode is not a secret, so it does not need Keystore-backed storage; the
- * GitHub token and EVREN API key do and are handled elsewhere.
- */
+/** Persists the selected mode in SharedPreferences. */
 class SharedPreferencesPushModeStore(context: Context) : PushModeStore {
-
     private val prefs =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
