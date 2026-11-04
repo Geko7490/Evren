@@ -72,9 +72,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
             }
         }
         val indexLimit = contextLength?.let { (it / 80).coerceIn(200, MAX_INDEXED_PATHS) } ?: 400
-        val targetText = targets.joinToString("
-
-") { target ->
+        val targetText = targets.joinToString("\n\n") { target ->
             buildString {
                 appendLine("REPOSITORY: ${target.repository.fullName}")
                 appendLine("BRANCH: ${target.branch}")
@@ -182,8 +180,7 @@ Continue."))
                 val prefix = args.optString("path").trim('/')
                 val entries = github.getTree(target.repository.fullName, target.branch)
                     .filter { prefix.isBlank() || it.path.startsWith("$prefix/") }
-                    .joinToString("
-") { "${it.type}: ${it.path}" }
+                    .joinToString("\n") { "${it.type}: ${it.path}" }
                 logs += "Dosyalar tarandı · ${target.repository.fullName.substringAfter('/')}"
                 if (entries.isBlank()) "Eşleşen dosya yok."
                 else if (entries.length > MAX_LISTING_CHARS) entries.take(MAX_LISTING_CHARS) +
