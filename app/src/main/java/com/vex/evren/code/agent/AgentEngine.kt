@@ -234,6 +234,8 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
             }
             else -> "Araç hatası: desteklenmeyen araç '$name'."
         }
+    } catch (error: IOException) {
+        throw error
     } catch (error: Exception) {
         "Araç hatası ($name): ${error.message ?: "Bilinmeyen hata"}"
     }
