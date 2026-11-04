@@ -103,9 +103,14 @@ class AgentRunService : Service() {
                 notifyProgress("Agent hatası", e.message ?: "Bilinmeyen hata")
             } finally {
                 runner = null
-                releaseCpuWakeLock()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                val nextTask = withContext(NonCancellable + Dispatchers.IO) { dao.nextQueued() }
+                if (nextTask != null && !cancelRequested) {
+                    scope.launch { execute(nextTask) }
+                } else {
+                    releaseCpuWakeLock()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
             }
         }
     }
