@@ -164,8 +164,13 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 val file = github.readFile(target.repository.fullName, path, target.branch)
                 logs += "Dosya okundu · ${target.repository.fullName.substringAfter('/')}/$path"
                 val content = file.content
-                val bounded = if (content.length > MAX_FILE_CHARS) {
-                    content.take(MAX_FILE_CHARS) + "\n\n[FILE CONTENT TRUNCATED FOR CONTEXT SAFETY. Read a narrower section or inspect targeted symbols.]"
+                val fileCharLimit = minOf(
+                    MAX_FILE_CHARS,
+                    ((contextLength ?: DEFAULT_CONTEXT_TOKENS).toLong() * 4L / 8L)
+                        .coerceAtLeast(4_000L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                )
+                val bounded = if (content.length > fileCharLimit) {
+                    content.take(fileCharLimit) + "\n\n[FILE CONTENT TRUNCATED FOR CONTEXT SAFETY. Read a narrower section or inspect targeted symbols.]"
                 } else content
                 "REPOSITORY: ${target.repository.fullName}\nPATH: $path\nBLOB_SHA: ${file.sha}\nCONTENT:\n$bounded"
             }
