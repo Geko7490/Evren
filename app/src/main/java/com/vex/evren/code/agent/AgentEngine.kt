@@ -28,7 +28,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         model: String, request: String, repository: GitHubRepository, branch: String,
         maxTokens: Int = 4096, onProgress: (String) -> Unit
     ): AgentRunResult = run(
-        model, request, listOf(AgentTarget(repository, branch)), maxTokens, 12, false, null, onProgress
+        model, request, listOf(AgentTarget(repository, branch)), maxTokens, 12, false, null, null, {}, onProgress
     )
 
     suspend fun run(
@@ -39,6 +39,8 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         maxSteps: Int = 12,
         fullAccess: Boolean = false,
         contextLength: Int? = null,
+        resumeCheckpoint: String? = null,
+        onCheckpoint: (String) -> Unit = {},
         onProgress: (String) -> Unit
     ): AgentRunResult {
         require(request.isNotBlank()) { "Bir görev açıklaması yazın." }
@@ -50,9 +52,23 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 .filter { it.type == "blob" }.map { it.path }
         }
         onProgress("Dosya listesi hazır · Agent görevi başlatılıyor")
+        val savedCheckpoint = runCatching { resumeCheckpoint?.let { JSONObject(it) } }.getOrNull()
         val changes = linkedMapOf<String, ProposedChange>()
         val logs = mutableListOf<String>()
         var plan = emptyList<String>()
+        savedCheckpoint?.optJSONArray("logs")?.let { array ->
+            for (i in 0 until array.length()) logs += array.optString(i)
+        }
+        savedCheckpoint?.optJSONArray("plan")?.let { array -> plan = array.asStringList() }
+        savedCheckpoint?.optJSONArray("changes")?.let { array ->
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val change = ProposedChange(item.optString("repositoryFullName"), item.optString("branch"),
+                    item.optString("path"), item.optString("before"), item.optString("after"),
+                    item.optString("originalSha").takeIf { it.isNotBlank() })
+                changes["${change.repositoryFullName}:${change.path}"] = change
+            }
+        }
         val indexLimit = contextLength?.let { (it / 80).coerceIn(200, MAX_INDEXED_PATHS) } ?: 400
         val targetText = targets.joinToString("\n\n") { target ->
             buildString {
@@ -66,7 +82,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 }
             }
         }
-        val messages = JSONArray()
+        val initialMessages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", SYSTEM_PROMPT + if (fullAccess) "\n\nFULL ACCESS MODE: create, replace and delete repository files directly on selected working branches. Commit changes without per-file approval. Never modify the default branch or repository settings, secrets, collaborators, or permissions." else ""))
             .put(JSONObject().put("role", "user").put("content", buildString {
                 appendLine("Connected repositories:")
@@ -76,6 +92,8 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 appendLine("You may inspect and coordinate changes across all connected repositories. Always specify the exact repository in every repository tool call.")
                 appendLine("Use list_files for targeted discovery; do not assume omitted paths do not exist.")
             }))
+        val messages = savedCheckpoint?.optJSONArray("messages") ?: initialMessages
+        onCheckpoint(encodeCheckpoint(messages, plan, logs, changes))
 
         val stepLimit = if (fullAccess) maxOf(maxSteps, 200) else maxSteps.coerceIn(1, 40)
         for (step in 0 until stepLimit) {
@@ -85,6 +103,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 onProgress
             )
             val effectiveOutputBudget = calculateOutputBudget(messages, contextLength, maxTokens)
+            onCheckpoint(encodeCheckpoint(messages, plan, logs, changes))
             val contextWindow = contextLength ?: DEFAULT_CONTEXT_TOKENS
             val estimatedPrompt = estimateMessageTokens(messages)
             onProgress("EVREN analiz ediyor · ${step + 1}/$stepLimit · context ≈ $estimatedPrompt/$contextWindow tokens · output $effectiveOutputBudget")
@@ -106,11 +125,13 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                     }
                     messages.put(JSONObject().put("role", "assistant").put("content", content))
                     messages.put(JSONObject().put("role", "user").put("content", "Tool result:\n$output\nContinue."))
+                    onCheckpoint(encodeCheckpoint(messages, plan, logs, changes))
                     continue
                 }
                 val answer = protocol?.optString("final")?.takeIf { it.isNotBlank() }
                     ?: content.ifBlank { "Model boş yanıt döndürdü." }
                 if (plan.isEmpty()) plan = extractPlan(answer)
+                onCheckpoint(encodeCheckpoint(messages, plan, logs, changes))
                 return AgentRunResult(answer, plan, logs, changes.values.toList())
             }
             messages.put(assistant)
@@ -129,6 +150,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                     return AgentRunResult(output, plan, logs, changes.values.toList())
                 }
             }
+            onCheckpoint(encodeCheckpoint(messages, plan, logs, changes))
         }
         return AgentRunResult(
             "Agent adım sınırına ulaştı. Oluşturulan önerileri inceleyip görevi devam ettirebilirsiniz.",
@@ -257,6 +279,19 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         for (index in 0 until rebuilt.length()) messages.put(rebuilt.get(index))
         onProgress("Context otomatik sıkıştırıldı · yaklaşık ${currentChars / 4} token → ${messages.length()} mesaj")
     }
+
+    private fun encodeCheckpoint(messages: JSONArray, plan: List<String>, logs: List<String>, changes: Map<String, ProposedChange>): String =
+        JSONObject().put("messages", messages)
+            .put("plan", JSONArray().apply { plan.forEach { put(it) } })
+            .put("logs", JSONArray().apply { logs.forEach { put(it) } })
+            .put("changes", JSONArray().apply {
+                changes.values.forEach { change ->
+                    put(JSONObject().put("repositoryFullName", change.repositoryFullName)
+                        .put("branch", change.branch).put("path", change.path)
+                        .put("before", change.before).put("after", change.after)
+                        .put("originalSha", change.originalSha ?: ""))
+                }
+            }).toString()
 
     private fun estimateMessageTokens(messages: JSONArray): Int {
         val promptChars = (0 until messages.length()).sumOf { messages.optJSONObject(it)?.toString()?.length ?: 0 }
