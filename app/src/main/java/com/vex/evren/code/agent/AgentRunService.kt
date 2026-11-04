@@ -68,7 +68,7 @@ class AgentRunService : Service() {
                 var result: AgentRunResult? = null
                 while (isActive && result == null) {
                     try {
-                        result = AgentEngine(evren, github, actions).run(
+                        result = AgentEngine(evren, github, actions, getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: filesDir).run(
                             model = task.model, request = task.request, targets = targets,
                             maxTokens = task.maxTokens, maxSteps = task.maxSteps,
                             fullAccess = task.fullAccess, contextLength = task.contextLength,
