@@ -82,6 +82,13 @@ class AgentRunService : Service() {
                             }
                         )
                     } catch (e: IOException) {
+                        val detail = e.message.orEmpty().lowercase()
+                        val transientNetworkFailure = listOf(
+                            "timeout", "timed out", "failed to connect", "unable to resolve host",
+                            "network is unreachable", "connection reset", "unexpected end of stream",
+                            "software caused connection abort"
+                        ).any { detail.contains(it) }
+                        if (!transientNetworkFailure) throw e
                         attempt++
                         if (attempt > 8) throw e
                         val delaySeconds = (5L shl (attempt - 1)).coerceAtMost(60L)
