@@ -233,9 +233,11 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 val target = resolveTarget(args, targets)
                 val client = actions ?: throw IllegalStateException("GitHub Actions client is unavailable.")
                 val workflow = args.getString("workflow")
+                val dispatchCount = logs.count { it.startsWith("GitHub Actions build başlatıldı") }
+                require(dispatchCount < 3) { "Bu görev için en fazla 3 build denemesi yapılabilir (ilk build + 2 düzeltme)." }
                 client.dispatch(target.repository.fullName, workflow, target.branch)
                 logs += "GitHub Actions build başlatıldı · " + target.repository.fullName + " · " + workflow
-                "Build dispatch isteği gönderildi. list_builds ile sonucu takip et."
+                "Build dispatch isteği gönderildi. wait_build aracını kullanarak terminal sonucu bekle."
             }
             "list_builds" -> {
                 val target = resolveTarget(args, targets)
@@ -243,6 +245,13 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 client.listRuns(target.repository.fullName, target.branch, args.optInt("limit", 10)).joinToString("\n") { run ->
                     "Run #" + run.runNumber + " · " + run.name + " · " + run.status + "/" + (run.conclusion ?: "pending") + " · id=" + run.id + " · " + run.htmlUrl
                 }.ifBlank { "Bu branch için build bulunamadı." }
+            }
+            "wait_build" -> {
+                val target = resolveTarget(args, targets)
+                val client = actions ?: throw IllegalStateException("GitHub Actions client is unavailable.")
+                val run = client.waitForRun(target.repository.fullName, args.getLong("run_id"), args.optInt("timeout_minutes", 20))
+                logs += "Build terminal · #${run.runNumber} · ${run.conclusion}"
+                "Build tamamlandı: #${run.runNumber} · ${run.status}/${run.conclusion} · ${run.htmlUrl} · commit ${run.headSha}"
             }
             "inspect_build" -> {
                 val target = resolveTarget(args, targets)
@@ -378,7 +387,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         "list_files" -> "Dosyalar inceleniyor"
         "read_file" -> "Kod okunuyor"
         "propose_file_change" -> "Değişiklik hazırlanıyor"
-        "download_artifact" -> "Build artifact indiriliyor"\n        "finish_task" -> "Son kontrol yapılıyor"
+        "download_artifact" -> "Build artifact indiriliyor"\n        "wait_build" -> "Build sonucu bekleniyor"\n        "finish_task" -> "Son kontrol yapılıyor"
         else -> "Agent çalışıyor"
     }
 
@@ -404,6 +413,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         if (fullAccess) put(functionTool("delete_file", "Delete a file from the selected working branch when required by the task.", """{"type":"object","properties":{$repoProperty"path":{"type":"string"}},"required":["repository","path"]}"""))
         put(functionTool("list_workflows", "List GitHub Actions workflows for a connected repository.", """{"type":"object","properties":{$repoProperty},"required":["repository"]}"""))
         put(functionTool("list_builds", "List recent GitHub Actions runs for the selected branch.", """{"type":"object","properties":{$repoProperty"limit":{"type":"integer","minimum":1,"maximum":30}},"required":["repository"]}"""))
+        put(functionTool("wait_build", "Wait for one GitHub Actions run to reach a terminal success or failure state (maximum 20 minutes).", """{"type":"object","properties":{$repoProperty"run_id":{"type":"integer"},"timeout_minutes":{"type":"integer","minimum":1,"maximum":20}},"required":["repository","run_id"]}"""))
         put(functionTool("inspect_build", "Inspect a GitHub Actions run, jobs, failed step logs and artifacts.", """{"type":"object","properties":{$repoProperty"run_id":{"type":"integer"}},"required":["repository","run_id"]}"""))
         put(functionTool("download_artifact", "Download a non-expired ZIP artifact from a selected GitHub Actions run into the app Downloads folder.", """{"type":"object","properties":{$repoProperty"run_id":{"type":"integer"},"artifact_id":{"type":"integer"}},"required":["repository","run_id","artifact_id"]}"""))
         if (fullAccess) put(functionTool("dispatch_build", "Trigger a GitHub Actions workflow_dispatch build on the selected branch.", """{"type":"object","properties":{$repoProperty"workflow":{"type":"string"}},"required":["repository","workflow"]}"""))
@@ -431,7 +441,7 @@ Choose the investigation order and implementation roadmap yourself. Start by sub
 Inspect relevant files before proposing changes. Every repository tool call must include the exact owner/repo in its repository argument.
 Coordinate interfaces and compatibility across repositories. Do not assume the two repositories share a build system.
 When Full Access Mode is disabled, prepare complete file-change proposals. When enabled, write changes directly using the available repository tools.
-Use GitHub Actions for Android builds; never require local Gradle or Android SDK. Use list_workflows, dispatch_build, list_builds and inspect_build for remote CI. A dispatch request is not proof of build success: poll until a terminal conclusion. Analyze failed step logs before proposing bounded fixes. Never claim a build succeeded without a completed success conclusion.
+Use GitHub Actions for Android builds; never require local Gradle or Android SDK. Use list_workflows, dispatch_build, list_builds and inspect_build for remote CI. A dispatch request is not proof of build success: call wait_build until a terminal conclusion. Analyze failed step logs before proposing bounded fixes. Never claim a build succeeded without a completed success conclusion. For autonomous CI repair, allow at most two repair cycles after the initial build (three dispatches total); stop and report if the third build fails.
 When Full Access Mode is disabled, never write directly to GitHub; changes remain proposals until reviewed and approved. In Full Access Mode, commit directly to the selected working branches, never to the default branch.
 Send short, meaningful progress updates through tool status messages.
 Finish with a concise summary, limitations, and files proposed.
