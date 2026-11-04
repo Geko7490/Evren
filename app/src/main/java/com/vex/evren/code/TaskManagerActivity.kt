@@ -45,7 +45,7 @@ class TaskManagerActivity : ComponentActivity() {
                                         if (artifactFile?.isFile == true) {
                                             TextButton(onClick = {
                                                 val uri = FileProvider.getUriForFile(this@TaskManagerActivity,
-                                                    "${BuildConfig.APPLICATION_ID}.fileprovider", artifactFile)
+                                                    "${packageName}.fileprovider", artifactFile)
                                                 val share = Intent(Intent.ACTION_SEND).apply {
                                                     type = "application/zip"
                                                     putExtra(Intent.EXTRA_STREAM, uri)
