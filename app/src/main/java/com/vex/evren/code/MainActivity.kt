@@ -684,6 +684,10 @@ private fun AgentPanel(
                 "Context: ${modelDetails.contextLength ?: "?"} · Model output cap: ${modelDetails.defaultMaxOutputTokens ?: "?"} · Standard budget: ${modelDetails.recommendedAgentBudget()}",
                 color = VexMuted, fontSize = 11.sp
             )
+            Text(
+                "Adaptive context manager: automatic history compression, context-aware output budgeting, 5,000-path prompt index and 60,000-character per-file safety limit.",
+                color = VexMuted, fontSize = 10.sp
+            )
         } else {
             Text("Loading model capabilities…", color = VexMuted, fontSize = 11.sp)
         }
