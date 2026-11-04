@@ -106,12 +106,13 @@ class EvrenApiClient(
         }
 
     suspend fun chatWithTools(
-        model: String, tools: JSONArray, messages: JSONArray, maxTokens: Int = 4096
+        model: String, tools: JSONArray, messages: JSONArray, maxTokens: Int? = 4096
     ): JSONObject = withContext(Dispatchers.IO) {
-        val safeMaxTokens = maxTokens.coerceAtLeast(1)
+        val safeMaxTokens = maxTokens?.coerceAtLeast(1)
         val payload = JSONObject().put("model", model).put("messages", messages)
-            .put("temperature", 0.1).put("max_tokens", safeMaxTokens)
+            .put("temperature", 0.1)
             .put("tools", tools).put("tool_choice", "auto").put("stream", false)
+        safeMaxTokens?.let { payload.put("max_tokens", it) }
         try {
             val response = postChat(payload)
             response.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
@@ -135,7 +136,8 @@ class EvrenApiClient(
                     "Do not wrap JSON in markdown.")
             }
             val fallback = postChat(JSONObject().put("model", model).put("messages", fallbackMessages)
-                .put("temperature", 0.1).put("max_tokens", safeMaxTokens).put("stream", false))
+                .put("temperature", 0.1).put("stream", false)
+                .apply { safeMaxTokens?.let { put("max_tokens", it) } })
             fallback.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
                 ?: throw IOException("EVREN fallback response did not contain an assistant message.")
         }
