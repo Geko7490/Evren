@@ -29,6 +29,7 @@ interface AgentTaskDao {
     @Query("SELECT * FROM agent_tasks WHERE id = :id LIMIT 1") suspend fun get(id: String): AgentTaskRecord?
     @Query("SELECT * FROM agent_tasks ORDER BY updatedAt DESC") fun observeAll(): Flow<List<AgentTaskRecord>>
     @Query("SELECT * FROM agent_tasks WHERE status = 'RUNNING' ORDER BY updatedAt DESC LIMIT 1") suspend fun latestRunning(): AgentTaskRecord?
+    @Query("SELECT * FROM agent_tasks WHERE status = 'QUEUED' ORDER BY createdAt ASC LIMIT 1") suspend fun nextQueued(): AgentTaskRecord?
     @Query("UPDATE agent_tasks SET status = :status, progress = :progress, updatedAt = :now WHERE id = :id")
     suspend fun setState(id: String, status: String, progress: String, now: Long = System.currentTimeMillis())
     @Query("UPDATE agent_tasks SET progress = :progress, checkpointJson = :checkpoint, updatedAt = :now WHERE id = :id")
