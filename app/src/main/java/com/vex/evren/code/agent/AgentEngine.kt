@@ -79,9 +79,15 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
 
         val stepLimit = if (fullAccess) maxOf(maxSteps, 200) else maxSteps.coerceIn(1, 40)
         for (step in 0 until stepLimit) {
-            compactContextIfNeeded(messages, contextLength, onProgress)
+            compactContextIfNeeded(
+                messages, contextLength,
+                plan + logs.takeLast(20) + changes.values.map { "Changed file: ${it.repositoryFullName}/${it.path}" },
+                onProgress
+            )
             val effectiveOutputBudget = calculateOutputBudget(messages, contextLength, maxTokens)
-            onProgress("EVREN analiz ediyor · ${step + 1}/$stepLimit · çıktı bütçesi $effectiveOutputBudget")
+            val contextWindow = contextLength ?: DEFAULT_CONTEXT_TOKENS
+            val estimatedPrompt = estimateMessageTokens(messages)
+            onProgress("EVREN analiz ediyor · ${step + 1}/$stepLimit · context ≈ $estimatedPrompt/$contextWindow tokens · output $effectiveOutputBudget")
             val assistant = evren.chatWithTools(model, tools(fullAccess), messages, effectiveOutputBudget)
             val calls = assistant.optJSONArray("tool_calls") ?: JSONArray()
             if (calls.length() == 0) {
@@ -209,7 +215,9 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
      * when the estimated prompt approaches the model context window. Estimation is
      * deliberately conservative (roughly four UTF-8 characters per token).
      */
-    private fun compactContextIfNeeded(messages: JSONArray, contextLength: Int?, onProgress: (String) -> Unit) {
+    private fun compactContextIfNeeded(
+        messages: JSONArray, contextLength: Int?, criticalMemory: List<String>, onProgress: (String) -> Unit
+    ) {
         val window = (contextLength ?: DEFAULT_CONTEXT_TOKENS).coerceAtLeast(8_192)
         val targetChars = (window.toLong() * 4L * CONTEXT_USAGE_RATIO).toLong().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         val currentChars = (0 until messages.length()).sumOf { messages.optJSONObject(it)?.toString()?.length ?: 0 }
@@ -225,7 +233,9 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
             body?.let { "$role: ${it.take(900)}" }
         }
         val compactNote = buildString {
-            appendLine("Context compression summary of earlier Agent activity (retain these facts):")
+            appendLine("Critical task memory (preserve these decisions and completed changes):")
+            criticalMemory.takeLast(40).forEach { appendLine("- ${it.take(500)}") }
+            appendLine("Context compression summary of earlier Agent activity:")
             notes.takeLast(24).forEach { appendLine("- $it") }
             appendLine("Earlier detailed messages were removed to stay within the model context window. Re-read repository files when exact current content is needed.")
         }.take(MAX_COMPACTION_NOTE_CHARS)
@@ -242,10 +252,14 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         onProgress("Context otomatik sıkıştırıldı · yaklaşık ${currentChars / 4} token → ${messages.length()} mesaj")
     }
 
+    private fun estimateMessageTokens(messages: JSONArray): Int {
+        val promptChars = (0 until messages.length()).sumOf { messages.optJSONObject(it)?.toString()?.length ?: 0 }
+        return (promptChars / 4).coerceAtLeast(1)
+    }
+
     private fun calculateOutputBudget(messages: JSONArray, contextLength: Int?, requestedMax: Int): Int {
         val window = (contextLength ?: DEFAULT_CONTEXT_TOKENS).coerceAtLeast(8_192)
-        val promptChars = (0 until messages.length()).sumOf { messages.optJSONObject(it)?.toString()?.length ?: 0 }
-        val estimatedPromptTokens = (promptChars / 4).coerceAtLeast(1)
+        val estimatedPromptTokens = estimateMessageTokens(messages)
         val safetyReserve = maxOf(512, window / 20)
         val available = (window - estimatedPromptTokens - safetyReserve).coerceAtLeast(1_024)
         return minOf(requestedMax.coerceAtLeast(1), available)
