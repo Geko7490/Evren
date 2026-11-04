@@ -6,7 +6,6 @@ import androidx.core.content.FileProvider
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,9 +20,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.vex.evren.code.agent.*
-import org.json.JSONObject
-import java.text.DateFormat
-import java.util.Date
 
 private val AgentBackground = Color(0xFF0F0F13)
 private val AgentPanel = Color(0xFF1C1B23)
@@ -65,6 +61,7 @@ class TaskManagerActivity : ComponentActivity() {
                                 items(tasks, key = { it.id }) { task ->
                                     AgentTaskCard(
                                         task = task,
+                                        onOpen = { startActivity(Intent(this@TaskManagerActivity, AgentLiveActivity::class.java).putExtra(AgentLiveActivity.EXTRA_TASK_ID, task.id)) },
                                         onPause = {
                                             startService(Intent(this@TaskManagerActivity, AgentRunService::class.java).setAction(AgentRunService.ACTION_PAUSE))
                                         },
@@ -117,100 +114,24 @@ private fun SummaryTile(label: String, value: String, modifier: Modifier = Modif
 @Composable
 private fun AgentTaskCard(
     task: AgentTaskRecord,
+    onOpen: () -> Unit,
     onPause: () -> Unit,
     onCancel: () -> Unit,
     onResume: () -> Unit,
     onShare: (File) -> Unit
 ) {
-    val isRunning = task.status == AgentRunService.STATUS_RUNNING
-    val isQueued = task.status == AgentRunService.STATUS_QUEUED
-    val stepMatch = Regex("·\\s*(\\d+)\\s*/\\s*(\\d+)").find(task.progress)
-    val currentStep = stepMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
-    val totalSteps = stepMatch?.groupValues?.getOrNull(2)?.toIntOrNull()
-    val fraction = if (currentStep != null && totalSteps != null && totalSteps > 0) {
-        (currentStep.toFloat() / totalSteps).coerceIn(0f, 1f)
-    } else null
-    val statusLabel = when (task.status) {
-        AgentRunService.STATUS_RUNNING -> "ÇALIŞIYOR"
-        AgentRunService.STATUS_QUEUED -> "SIRADA"
-        AgentRunService.STATUS_PAUSED -> "DURAKLATILDI"
-        AgentRunService.STATUS_COMPLETED -> "TAMAMLANDI"
-        AgentRunService.STATUS_FAILED -> "HATA"
-        AgentRunService.STATUS_CANCELLED -> "İPTAL EDİLDİ"
-        else -> task.status
-    }
-    val statusColor = when (task.status) {
-        AgentRunService.STATUS_COMPLETED -> Color(0xFF4ADE80)
-        AgentRunService.STATUS_FAILED -> Color(0xFFF87171)
-        AgentRunService.STATUS_PAUSED -> Color(0xFFFBBF24)
-        AgentRunService.STATUS_RUNNING -> AgentPurple
-        else -> AgentMuted
-    }
-
+    val running = task.status == AgentRunService.STATUS_RUNNING
     Surface(Modifier.fillMaxWidth(), color = AgentPanel, shape = RoundedCornerShape(12.dp)) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(statusLabel, color = statusColor, fontSize = 11.sp)
-                Text(DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(task.updatedAt)), color = AgentMuted, fontSize = 10.sp)
+                Text(task.status, color = if (running) AgentPurple else AgentMuted, fontSize = 11.sp)
+                Text(task.model, color = AgentMuted, fontSize = 11.sp)
             }
             Text(task.request, color = Color.White, fontSize = 14.sp)
-            if (isRunning || isQueued || task.status == AgentRunService.STATUS_PAUSED) {
-                if (fraction != null) {
-                    LinearProgressIndicator(
-                        progress = { fraction },
-                        modifier = Modifier.fillMaxWidth().height(6.dp),
-                        color = AgentPurple,
-                        trackColor = Color(0xFF383442)
-                    )
-                    Text("Agent adımı: ${currentStep}/${totalSteps} · Bu, görevin tamamlanma yüzdesi değildir.", color = AgentMuted, fontSize = 10.sp)
-                } else if (isRunning) {
-                    LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth().height(6.dp),
-                        color = AgentPurple,
-                        trackColor = Color(0xFF383442)
-                    )
-                    Text("Canlı işlem sürüyor · Kesin yüzde hesaplanamıyor", color = AgentMuted, fontSize = 10.sp)
-                }
-            }
-            Text("ŞU ANDA NE YAPIYOR?", color = AgentMuted, fontSize = 10.sp)
-            Text(task.progress.ifBlank { "Görev durumu bekleniyor" }, color = Color(0xFFE4E4E7), fontSize = 13.sp)
-            if (task.status == AgentRunService.STATUS_FAILED) {
-                task.error?.let { Text("Hata: $it", color = Color(0xFFFCA5A5), fontSize = 12.sp) }
-            }
-            task.answer?.takeIf { it.isNotBlank() }?.let { answer ->
-                Divider(color = Color(0xFF34313D))
-                Text("SONUÇ", color = AgentMuted, fontSize = 10.sp)
-                Text(answer, color = Color(0xFFD4D4D8), fontSize = 12.sp)
-                val artifactPath = Regex("Dosya: (.+?) ·").find(answer)?.groupValues?.getOrNull(1)
-                val artifactFile = artifactPath?.let(::File)
-                if (artifactFile?.isFile == true) {
-                    TextButton(onClick = { onShare(artifactFile) }) { Text("APK / Artifact paylaş") }
-                }
-            }
-            val recentLogs = recentAgentLogs(task.checkpointJson)
-            if (recentLogs.isNotEmpty()) {
-                Divider(color = Color(0xFF34313D))
-                Text("SON İŞLEMLER", color = AgentMuted, fontSize = 10.sp)
-                recentLogs.forEach { line ->
-                    Text("• $line", color = Color(0xFFBDB8C8), fontSize = 11.sp)
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (isRunning) {
-                    TextButton(onClick = onPause) { Text("Duraklat") }
-                    TextButton(onClick = onCancel) { Text("İptal et") }
-                }
-                if (task.status == AgentRunService.STATUS_PAUSED || task.status == AgentRunService.STATUS_FAILED) {
-                    TextButton(onClick = onResume) { Text("Devam et") }
-                }
-            }
+            Text(task.progress.ifBlank { "Bekleniyor" }, color = AgentMuted, fontSize = 12.sp)
+            if (running) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(5.dp), color = AgentPurple, trackColor = Color(0xFF383442))
+            Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("Canlı izle / Görev ayrıntıları") }
+            if (task.status == AgentRunService.STATUS_FAILED) task.error?.let { Text(it, color = Color(0xFFF87171), fontSize = 12.sp) }
         }
     }
 }
-
-private fun recentAgentLogs(checkpoint: String?): List<String> = runCatching {
-    val logs = JSONObject(checkpoint ?: return emptyList()).optJSONArray("logs") ?: return emptyList()
-    (maxOf(0, logs.length() - 3) until logs.length()).mapNotNull { index ->
-        logs.optString(index).takeIf { it.isNotBlank() }
-    }
-}.getOrDefault(emptyList())
