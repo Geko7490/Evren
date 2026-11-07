@@ -428,7 +428,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
     private fun tools(fullAccess: Boolean, localEnabled: Boolean) = JSONArray().apply {
         val repoProperty = "\"repository\":{\"type\":\"string\",\"description\":\"Exact owner/repo name from the connected repository list\"},"
         if (localEnabled) {
-            put(functionTool("local_list_files", "List local workspace files.", """{"type":"object","properties":{"path":{"type":"string"}}}"""))
+            put(functionTool("local_list_files", "List local workspace files. Use empty path for selected root; all paths are relative to selected root, not Android absolute paths.", """{"type":"object","properties":{"path":{"type":"string"}}}"""))
             put(functionTool("local_read_file", "Read lines of a local workspace file.", """{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer"},"max_lines":{"type":"integer"}},"required":["path"]}"""))
             if (fullAccess) {
                 put(functionTool("local_write_file", "Create or replace a file in the selected local folder.", """{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}"""))
@@ -473,7 +473,7 @@ Coordinate interfaces and compatibility across repositories. Do not assume the t
 When Full Access Mode is disabled, prepare complete file-change proposals. When enabled, write changes directly using the available repository tools.
 Use GitHub Actions for Android builds; never require local Gradle or Android SDK. Use list_workflows, dispatch_build, list_builds and inspect_build for remote CI. A dispatch request is not proof of build success: call wait_build until a terminal conclusion. Analyze failed step logs before proposing bounded fixes. Never claim a build succeeded without a completed success conclusion. For autonomous CI repair, allow at most two repair cycles after the initial build (three dispatches total); stop and report if the third build fails.
 When Full Access Mode is disabled, never write directly to GitHub; changes remain proposals until reviewed and approved. In Full Access Mode, commit directly to the selected working branches, never to the default branch.
-For a local workspace, use local_list_files and local_read_file to inspect, and local_write_file to implement changes. Never claim local builds ran unless an execution tool exists. Complete the task and call finish_task when finished; do not loop just to consume steps.\nSend short, meaningful progress updates through tool status messages.
+For a local workspace, FIRST call local_list_files with path empty string to discover the selected root. Every local path must be relative to this selected root; never use /storage, /sdcard, absolute paths or the selected root folder name as a prefix. Use local_read_file to inspect and local_write_file to implement changes. Never claim local builds ran unless an execution tool exists. Complete the task and call finish_task when finished; do not loop just to consume steps.\nSend short, meaningful progress updates through tool status messages.
 Finish with a concise summary, limitations, and files proposed.
 """.trimIndent()
     }
