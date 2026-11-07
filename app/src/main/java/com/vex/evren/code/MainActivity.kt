@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.content.Intent
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -128,6 +130,19 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
     var agentMaxPower by remember { mutableStateOf(false) }
     var agentAutopilot by remember { mutableStateOf(false) }
     var agentFullAccess by remember { mutableStateOf(false) }
+    var unlimitedAgent by remember { mutableStateOf(false) }
+    var useLocalWorkspace by remember { mutableStateOf(false) }
+    var localFolderUri by remember { mutableStateOf("") }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            try {
+                appContext.contentResolver.takePersistableUriPermission(uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                localFolderUri = uri.toString()
+                useLocalWorkspace = true
+            } catch (e: Exception) { errorMessage = "Klasör izni alınamadı: ${e.message}" }
+        }
+    }
     var selectedBranch by remember { mutableStateOf("") }
     var workingBranch by remember { mutableStateOf("") }
     val tree = remember { mutableStateListOf<GitHubTreeEntry>() }
@@ -149,7 +164,18 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
     var termsStatusMessage by remember { mutableStateOf("Terms status has not been checked.") }
 
     suspend fun finishServiceConnection() {
-        val user = github.validateToken()
+        if (githubToken.isBlank()) {
+            githubConnected = false
+            connectionMessage = "EVREN bağlı · GitHub isteğe bağlı (yerel klasör seçebilirsiniz)."
+            tab = WorkspaceTab.AGENT
+            return
+        }
+        val user = try { github.validateToken() } catch (e: Exception) {
+            githubConnected = false
+            connectionMessage = "EVREN bağlı · GitHub erişilemiyor: ${e.message}. Yerel mod kullanılabilir."
+            tab = WorkspaceTab.AGENT
+            return
+        }
         githubLogin = user.login
         githubConnected = true
         connectionMessage = "Connected as ${githubLogin} · ${models.size} EVREN models found."
@@ -162,6 +188,8 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
     LaunchedEffect(Unit) {
         evrenKey = vault.read("evren_api_key").orEmpty()
         githubToken = vault.read("github_pat").orEmpty()
+        localFolderUri = appContext.contentResolver.persistedUriPermissions
+            .firstOrNull { it.isReadPermission && it.isWritePermission }?.uri?.toString().orEmpty()
         val savedApiUrl = vault.read("evren_base_url")
         apiUrl = if (savedApiUrl.isNullOrBlank() || savedApiUrl == "https://evren.ssyz.org.tr/v1") {
             vault.save("evren_base_url", EvrenApiClient.DEFAULT_BASE_URL)
@@ -374,6 +402,12 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                 onAutopilot = { agentAutopilot = it },
                 fullAccess = agentFullAccess,
                 onFullAccess = { agentFullAccess = it },
+                unlimited = unlimitedAgent,
+                onUnlimited = { unlimitedAgent = it },
+                localMode = useLocalWorkspace,
+                onLocalMode = { useLocalWorkspace = it },
+                localFolder = localFolderUri,
+                onPickLocalFolder = { folderPicker.launch(null) },
                 input = taskInput,
                 onInput = { taskInput = it },
                 status = agentStatus,
@@ -383,7 +417,8 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                     val repo = selectedRepository
                     when {
                         !termsAccepted -> errorMessage = "EVREN şartlarını kabul etmeden Agent çalıştırılamaz."
-                        repo == null -> errorMessage = "Önce bir repo seçin."
+                        !useLocalWorkspace && repo == null -> errorMessage = "Önce bir repo seçin."
+                        useLocalWorkspace && localFolderUri.isBlank() -> errorMessage = "Önce yerel klasör seçin."
                         selectedModel.isBlank() -> errorMessage = "EVREN'e bağlanıp model seçin."
                         taskInput.isBlank() -> errorMessage = "Önce yapılacak görevi yazın."
                         else -> scope.launch {
@@ -393,7 +428,7 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                             proposals.clear()
                             try {
                                 var activeBranch = workingBranch
-                                if (activeBranch.isBlank() || activeBranch == repo.defaultBranch) {
+                                if (!useLocalWorkspace && repo != null && (activeBranch.isBlank() || activeBranch == repo.defaultBranch)) {
                                     agentStatus = "Güvenli çalışma dalı oluşturuluyor"
                                     val newBranch = "vex-agent-${System.currentTimeMillis()}"
                                     github.createBranch(repo.fullName, newBranch, repo.defaultBranch)
@@ -415,8 +450,9 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                                 } else {
                                     details?.recommendedAgentBudget() ?: 4096
                                 }
-                                val targets = mutableListOf(AgentTarget(repo, activeBranch))
-                                selectedSecondaryRepository?.let { secondRepo ->
+                                val targets = mutableListOf<AgentTarget>()
+                                if (!useLocalWorkspace && repo != null) targets += AgentTarget(repo, activeBranch)
+                                if (!useLocalWorkspace) selectedSecondaryRepository?.let { secondRepo ->
                                     if (secondaryWorkingBranch.isBlank() || secondaryBranchRepository != secondRepo.fullName) {
                                         agentStatus = "İkinci repo için güvenli çalışma dalı oluşturuluyor"
                                         val newBranch = "vex-agent-${System.currentTimeMillis()}-secondary"
@@ -436,6 +472,7 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                                     }
                                 }
                                 val targetsJson = JSONArray().apply {
+                                    if (useLocalWorkspace) put(JSONObject().put("localTreeUri", localFolderUri))
                                     targets.forEach { target ->
                                         put(JSONObject().put("id", target.repository.id)
                                             .put("fullName", target.repository.fullName)
@@ -455,7 +492,7 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
                                     putExtra(AgentRunService.EXTRA_REQUEST, fullRequest)
                                     putExtra(AgentRunService.EXTRA_TARGETS, targetsJson.toString())
                                     putExtra(AgentRunService.EXTRA_MAX_TOKENS, tokenBudget)
-                                    putExtra(AgentRunService.EXTRA_MAX_STEPS, if (agentAutopilot) 30 else 12)
+                                    putExtra(AgentRunService.EXTRA_MAX_STEPS, if (unlimitedAgent) 0 else if (agentAutopilot) 30 else 12)
                                     putExtra(AgentRunService.EXTRA_FULL_ACCESS, agentFullAccess)
                                     putExtra(AgentRunService.EXTRA_CONTEXT_LENGTH, details?.contextLength ?: -1)
                                 }
@@ -674,6 +711,9 @@ private fun AgentPanel(
     maxPower: Boolean, onMaxPower: (Boolean) -> Unit,
     autopilot: Boolean, onAutopilot: (Boolean) -> Unit,
     fullAccess: Boolean, onFullAccess: (Boolean) -> Unit,
+    unlimited: Boolean, onUnlimited: (Boolean) -> Unit,
+    localMode: Boolean, onLocalMode: (Boolean) -> Unit,
+    localFolder: String, onPickLocalFolder: () -> Unit,
     input: String, onInput: (String) -> Unit, status: String,
     result: AgentRunResult?, busy: Boolean, onRun: (String) -> Unit, onViewChanges: () -> Unit
 ) {
@@ -686,8 +726,8 @@ private fun AgentPanel(
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Autonomous coding agent", color = VexText, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Text("${repository?.fullName ?: "No repository"} · $branch · ${model.ifBlank { "No model" }}", color = VexMuted, fontSize = 11.sp)
-        if (repository != null && branch == repository.defaultBranch) {
+        Text("${if (localMode) "Local folder" else repository?.fullName ?: "No repository"} · ${if (localMode) "On-device" else branch} · ${model.ifBlank { "No model" }}", color = VexMuted, fontSize = 11.sp)
+        if (!localMode && repository != null && branch == repository.defaultBranch) {
             Text("Çalışma dalı henüz yok. Run Agent ilk çalıştırmada güvenli bir dalı otomatik oluşturur.",
                 color = VexMuted, fontSize = 10.sp)
         }
@@ -728,6 +768,15 @@ private fun AgentPanel(
             Text("Loading model capabilities…", color = VexMuted, fontSize = 11.sp)
         }
 
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Yerel klasör modu", color = VexText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(if (localFolder.isBlank()) "Klasör seçilmedi" else android.net.Uri.parse(localFolder).lastPathSegment ?: "Yerel klasör", color = VexMuted, fontSize = 10.sp)
+            }
+            androidx.compose.material3.Switch(checked = localMode, onCheckedChange = onLocalMode)
+        }
+        OutlinedButton(onClick = onPickLocalFolder, modifier = Modifier.fillMaxWidth()) { Text("Cihazdan klasör seç") }
+        Text(if (localMode) "GitHub olmadan çalışır. Dosya yazmak için Full Access gerekir." else "GitHub çalışma modu açık.", color = VexMuted, fontSize = 10.sp)
         Text("Connected repositories", color = VexText, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         Text("1. ${repository?.fullName ?: "Not selected"}", color = VexMuted, fontSize = 11.sp)
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -763,6 +812,13 @@ private fun AgentPanel(
                     androidx.compose.material3.Switch(checked = autopilot, onCheckedChange = onAutopilot)
                 }
                 Text(if (autopilot) "Autopilot: uzun görevler için genişletilmiş Agent çalışma döngüsü." else "Standart: kontrollü Agent çalışma döngüsü.", color = VexMuted, fontSize = 10.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Unlimited Agent", color = VexText, fontSize = 12.sp)
+                        Text("Sabit adım sınırı yok; görev bitince durur. API/kota sınırları geçerlidir.", color = VexMuted, fontSize = 10.sp)
+                    }
+                    androidx.compose.material3.Switch(checked = unlimited, onCheckedChange = onUnlimited)
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Full Access Mode", color = VexText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -826,7 +882,7 @@ private fun AgentPanel(
         }
 
         Button(onClick = { onRun(planningContext) },
-            enabled = !busy && termsAccepted && repository != null && model.isNotBlank() && input.isNotBlank(),
+            enabled = !busy && termsAccepted && (if (localMode) localFolder.isNotBlank() else repository != null) && model.isNotBlank() && input.isNotBlank(),
             modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) { Text("Run Agent") }
         Text(status, color = VexPurple, fontSize = 12.sp)
         result?.let { output ->
