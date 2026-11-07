@@ -133,16 +133,6 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
     var unlimitedAgent by remember { mutableStateOf(false) }
     var useLocalWorkspace by remember { mutableStateOf(false) }
     var localFolderUri by remember { mutableStateOf("") }
-    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) {
-            try {
-                appContext.contentResolver.takePersistableUriPermission(uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                localFolderUri = uri.toString()
-                useLocalWorkspace = true
-            } catch (e: Exception) { errorMessage = "Klasör izni alınamadı: ${e.message}" }
-        }
-    }
     var selectedBranch by remember { mutableStateOf("") }
     var workingBranch by remember { mutableStateOf("") }
     val tree = remember { mutableStateListOf<GitHubTreeEntry>() }
@@ -155,6 +145,16 @@ private fun VexWorkspace(vault: CredentialVault, evren: EvrenApiClient, github: 
     val proposals = remember { mutableStateListOf<ProposedChange>() }
     var activeChange by remember { mutableStateOf<ProposedChange?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            try {
+                appContext.contentResolver.takePersistableUriPermission(uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                localFolderUri = uri.toString()
+                useLocalWorkspace = true
+            } catch (e: Exception) { errorMessage = "Klasör izni alınamadı: ${e.message}" }
+        }
+    }
     var modelMenu by remember { mutableStateOf(false) }
     var modelDetails by remember { mutableStateOf<EvrenModelDetails?>(null) }
     var termsDialogVisible by remember { mutableStateOf(false) }
