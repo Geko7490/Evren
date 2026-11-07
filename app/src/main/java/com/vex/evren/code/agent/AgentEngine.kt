@@ -30,7 +30,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         model: String, request: String, repository: GitHubRepository, branch: String,
         maxTokens: Int = 4096, onProgress: (String) -> Unit
     ): AgentRunResult = run(
-        model, request, listOf(AgentTarget(repository, branch)), maxTokens, 12, false, null, null, {}, onProgress
+        model, request, listOf(AgentTarget(repository, branch)), maxTokens, 12, false, null, null, {}, null, onProgress
     )
 
     suspend fun run(
@@ -43,10 +43,11 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         contextLength: Int? = null,
         resumeCheckpoint: String? = null,
         onCheckpoint: (String) -> Unit = {},
+        localWorkspace: LocalWorkspace? = null,
         onProgress: (String) -> Unit
     ): AgentRunResult {
         require(request.isNotBlank()) { "Bir görev açıklaması yazın." }
-        require(targets.isNotEmpty()) { "En az bir repo seçilmelidir." }
+        require(targets.isNotEmpty() || localWorkspace != null) { "GitHub deposu veya yerel klasör seçilmelidir." }
         val indexes = linkedMapOf<String, List<String>>()
         targets.forEachIndexed { index, target ->
             onProgress("Repo taranıyor ${index + 1}/${targets.size} · ${target.repository.fullName}")
@@ -88,6 +89,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
             .put(JSONObject().put("role", "system").put("content", SYSTEM_PROMPT + if (fullAccess) "\n\nFULL ACCESS MODE: create, replace and delete repository files directly on selected working branches. Commit changes without per-file approval. Never modify the default branch or repository settings, secrets, collaborators, or permissions." else ""))
             .put(JSONObject().put("role", "user").put("content", buildString {
                 appendLine("Connected repositories:")
+                if (localWorkspace != null) appendLine("LOCAL WORKSPACE: selected Android document tree. Use local_* tools for local files. No GitHub token is needed for local operations.")
                 appendLine(targetText)
                 appendLine()
                 appendLine("User task: $request")
@@ -97,8 +99,10 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
         val messages = savedCheckpoint?.optJSONArray("messages") ?: initialMessages
         onCheckpoint(encodeCheckpoint(messages, plan, logs, changes))
 
-        val stepLimit = if (fullAccess) maxOf(maxSteps, 200) else maxSteps.coerceIn(1, 40)
-        for (step in 0 until stepLimit) {
+        val unlimited = maxSteps == 0
+        val stepLimit = if (unlimited) 0 else if (fullAccess) maxOf(maxSteps, 200) else maxSteps.coerceIn(1, 40)
+        var step = 0
+        while (unlimited || step < stepLimit) {
             compactContextIfNeeded(
                 messages, contextLength,
                 plan + logs.takeLast(20) + changes.values.map { "Changed file: ${it.repositoryFullName}/${it.path}" },
@@ -108,8 +112,9 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
             onCheckpoint(encodeCheckpoint(messages, plan, logs, changes))
             val contextWindow = contextLength ?: DEFAULT_CONTEXT_TOKENS
             val estimatedPrompt = estimateMessageTokens(messages)
-            onProgress("EVREN analiz ediyor · ${step + 1}/$stepLimit · context ≈ $estimatedPrompt/$contextWindow tokens · output $effectiveOutputBudget")
-            val assistant = evren.chatWithTools(model, tools(fullAccess), messages, effectiveOutputBudget)
+            onProgress("EVREN analiz ediyor · ${step + 1}/${if (unlimited) "∞" else stepLimit} · context ≈ $estimatedPrompt/$contextWindow tokens · output $effectiveOutputBudget")
+            step++
+            val assistant = evren.chatWithTools(model, tools(fullAccess, localWorkspace != null), messages, effectiveOutputBudget)
             val calls = assistant.optJSONArray("tool_calls") ?: JSONArray()
             if (calls.length() == 0) {
                 val content = assistant.optString("content")
@@ -120,7 +125,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                     val name = protocol.optString("tool")
                     val args = protocol.optJSONObject("arguments") ?: JSONObject()
                     onProgress(toolStatus(name))
-                    val output = execute(name, args, targets, changes, logs, fullAccess, contextLength)
+                    val output = execute(name, args, targets, changes, logs, fullAccess, contextLength, localWorkspace)
                     if (name == "submit_plan") plan = args.optJSONArray("steps").asStringList()
                     if (name == "finish_task") {
                         return AgentRunResult(output, plan, logs, changes.values.toList())
@@ -144,7 +149,7 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
                 val args = runCatching { JSONObject(function.optString("arguments")) }
                     .getOrElse { JSONObject() }
                 onProgress(toolStatus(name))
-                val output = execute(name, args, targets, changes, logs, fullAccess, contextLength)
+                val output = execute(name, args, targets, changes, logs, fullAccess, contextLength, localWorkspace)
                 if (name == "submit_plan") plan = args.optJSONArray("steps").asStringList()
                 messages.put(JSONObject().put("role", "tool")
                     .put("tool_call_id", call.optString("id")).put("content", output))
@@ -163,9 +168,23 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
     private suspend fun execute(
         name: String, args: JSONObject, targets: List<AgentTarget>,
         changes: MutableMap<String, ProposedChange>, logs: MutableList<String>, fullAccess: Boolean,
-        contextLength: Int?
+        contextLength: Int?, localWorkspace: LocalWorkspace?
     ): String = try {
         when (name) {
+            "local_list_files" -> (localWorkspace ?: throw IOException("Yerel klasör seçilmedi.")).list(args.optString("path"))
+            "local_read_file" -> (localWorkspace ?: throw IOException("Yerel klasör seçilmedi.")).read(args.getString("path"), args.optInt("start_line", 1), args.optInt("max_lines", 400))
+            "local_create_directory" -> {
+                require(fullAccess) { "Yerel yazma için Full Access açılmalıdır." }
+                (localWorkspace ?: throw IOException("Yerel klasör seçilmedi.")).mkdir(args.getString("path"))
+            }
+            "local_write_file" -> {
+                require(fullAccess) { "Yerel yazma için Full Access açılmalıdır." }
+                (localWorkspace ?: throw IOException("Yerel klasör seçilmedi.")).write(args.getString("path"), args.getString("content"))
+            }
+            "local_delete_file" -> {
+                require(fullAccess) { "Yerel silme için Full Access açılmalıdır." }
+                (localWorkspace ?: throw IOException("Yerel klasör seçilmedi.")).delete(args.getString("path"))
+            }
             "submit_plan" -> {
                 val steps = args.optJSONArray("steps").asStringList()
                 logs += "Plan hazırlandı · ${steps.size} adım"
@@ -406,8 +425,17 @@ class AgentEngine(private val evren: EvrenApiClient, private val github: GitHubA
     private fun JSONArray?.asStringList(): List<String> =
         if (this == null) emptyList() else (0 until length()).mapNotNull { optString(it).takeIf(String::isNotBlank) }
 
-    private fun tools(fullAccess: Boolean) = JSONArray().apply {
+    private fun tools(fullAccess: Boolean, localEnabled: Boolean) = JSONArray().apply {
         val repoProperty = "\"repository\":{\"type\":\"string\",\"description\":\"Exact owner/repo name from the connected repository list\"},"
+        if (localEnabled) {
+            put(functionTool("local_list_files", "List local workspace files. Use empty path for selected root; all paths are relative to selected root, not Android absolute paths.", """{"type":"object","properties":{"path":{"type":"string"}}}"""))
+            put(functionTool("local_read_file", "Read lines of a local workspace file.", """{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer"},"max_lines":{"type":"integer"}},"required":["path"]}"""))
+            if (fullAccess) {
+                put(functionTool("local_write_file", "Create or replace a file in the selected local folder.", """{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}"""))
+                put(functionTool("local_create_directory", "Create local directories.", """{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"""))
+                put(functionTool("local_delete_file", "Backup and delete a local file.", """{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"""))
+            }
+        }
         put(functionTool("submit_plan", "Submit the self-selected ordered implementation roadmap.", """{"type":"object","properties":{"steps":{"type":"array","items":{"type":"string"}}},"required":["steps"]}"""))
         put(functionTool("list_files", "List files in one connected repository.", """{"type":"object","properties":{$repoProperty"path":{"type":"string"}},"required":["repository"]}"""))
         put(functionTool("read_file", "Read a text file from one connected repository.", """{"type":"object","properties":{$repoProperty"path":{"type":"string"}},"required":["repository","path"]}"""))
@@ -445,7 +473,7 @@ Coordinate interfaces and compatibility across repositories. Do not assume the t
 When Full Access Mode is disabled, prepare complete file-change proposals. When enabled, write changes directly using the available repository tools.
 Use GitHub Actions for Android builds; never require local Gradle or Android SDK. Use list_workflows, dispatch_build, list_builds and inspect_build for remote CI. A dispatch request is not proof of build success: call wait_build until a terminal conclusion. Analyze failed step logs before proposing bounded fixes. Never claim a build succeeded without a completed success conclusion. For autonomous CI repair, allow at most two repair cycles after the initial build (three dispatches total); stop and report if the third build fails.
 When Full Access Mode is disabled, never write directly to GitHub; changes remain proposals until reviewed and approved. In Full Access Mode, commit directly to the selected working branches, never to the default branch.
-Send short, meaningful progress updates through tool status messages.
+For a local workspace, FIRST call local_list_files with path empty string to discover the selected root. Every local path must be relative to this selected root; never use /storage, /sdcard, absolute paths or the selected root folder name as a prefix. Use local_read_file to inspect and local_write_file to implement changes. Never claim local builds ran unless an execution tool exists. Complete the task and call finish_task when finished; do not loop just to consume steps.\nSend short, meaningful progress updates through tool status messages.
 Finish with a concise summary, limitations, and files proposed.
 """.trimIndent()
     }

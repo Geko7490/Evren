@@ -63,7 +63,12 @@ class AgentRunService : Service() {
                 val evren = EvrenApiClient({ vault.read("evren_api_key") }, { vault.read("evren_base_url") ?: EvrenApiClient.DEFAULT_BASE_URL })
                 val github = GitHubApiClient(token = { vault.read("github_pat") })
                 val actions = GitHubActionsClient(token = { vault.read("github_pat") })
+                val targetArray = JSONArray(task.targetsJson)
                 val targets = parseTargets(task.targetsJson)
+                val localUri = (0 until targetArray.length()).mapNotNull { index ->
+                    targetArray.optJSONObject(index)?.optString("localTreeUri")?.takeIf { it.isNotBlank() }
+                }.firstOrNull()
+                val localWorkspace = localUri?.let { LocalWorkspace(this@AgentRunService, android.net.Uri.parse(it)) }
                 var attempt = 0
                 var result: AgentRunResult? = null
                 while (isActive && result == null) {
@@ -73,6 +78,7 @@ class AgentRunService : Service() {
                             maxTokens = task.maxTokens, maxSteps = task.maxSteps,
                             fullAccess = task.fullAccess, contextLength = task.contextLength,
                             resumeCheckpoint = checkpoint,
+                            localWorkspace = localWorkspace,
                             onCheckpoint = { saved ->
                                 checkpoint = saved
                                 runBlocking(Dispatchers.IO) { dao.saveCheckpoint(task.id, "Checkpoint kaydedildi", saved) }
@@ -125,8 +131,9 @@ class AgentRunService : Service() {
 
     private fun parseTargets(raw: String): List<AgentTarget> {
         val a = JSONArray(raw)
-        return (0 until a.length()).map { n ->
+        return (0 until a.length()).mapNotNull { n ->
             val j = a.getJSONObject(n)
+            if (j.has("localTreeUri")) return@mapNotNull null
             val repo = GitHubRepository(j.optLong("id"), j.getString("fullName"),
                 j.optString("description").takeIf { it.isNotBlank() && it != "null" },
                 j.optString("defaultBranch","main"), j.optBoolean("isPrivate"),
