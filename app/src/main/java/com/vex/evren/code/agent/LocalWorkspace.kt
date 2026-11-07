@@ -23,7 +23,14 @@ class LocalWorkspace(private val context: Context, val treeUri: Uri) {
     }
 
     fun list(prefix: String = ""): String {
-        val dir = resolve(prefix) ?: throw IOException("Klasör bulunamadı: $prefix")
+        // Models often send "/", ".", "./" or the displayed root folder name.
+        // All of these refer to the directory already selected by the user.
+        val normalized = normalizeListPath(prefix)
+        val dir = resolve(normalized) ?: throw IOException(
+            "Klasör bulunamadı: '$prefix'. Yollar seçilen klasöre göre göreceli olmalıdır. " +
+                "Kök klasörü listelemek için path='' kullanın. Mevcut üst düzey girdiler: " +
+                root.listFiles().mapNotNull { it.name }.take(30).joinToString(", ")
+        )
         if (!dir.isDirectory) throw IOException("Bu yol bir klasör değil: $prefix")
         val output = mutableListOf<String>()
         fun walk(folder: DocumentFile, base: String, depth: Int) {
@@ -36,7 +43,7 @@ class LocalWorkspace(private val context: Context, val treeUri: Uri) {
                 if (output.size >= 2500) break
             }
         }
-        walk(dir, prefix.trim('/'), 0)
+        walk(dir, normalized, 0)
         return output.joinToString("\n").take(80_000) +
             if (output.size >= 2500) "\n[Listing capped. Inspect a narrower directory.]" else ""
     }
@@ -93,6 +100,18 @@ class LocalWorkspace(private val context: Context, val treeUri: Uri) {
             backup.outputStream().use { output -> input.copyTo(output) }
         } ?: throw IOException("Yedek alınamadı, yazma iptal edildi.")
         File(directory, backup.name + ".path").writeText(path, Charsets.UTF_8)
+    }
+
+    private fun normalizeListPath(raw: String): String {
+        val path = raw.trim().replace('\\', '/')
+        if (path.isEmpty() || path == "/" || path == "." || path == "./") return ""
+        val clean = path.removePrefix("./").trim('/')
+        val rootName = root.name.orEmpty()
+        if (clean == rootName) return ""
+        if (rootName.isNotEmpty() && clean.startsWith("$rootName/")) {
+            return clean.removePrefix("$rootName/")
+        }
+        return clean
     }
 
     private fun segments(path: String): List<String> {
